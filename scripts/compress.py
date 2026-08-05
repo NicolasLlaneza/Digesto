@@ -173,9 +173,12 @@ AYUDA_PYMUPDF = (
 
 def buscar_gs(explicito: str | None) -> str | None:
     if explicito:
-        if not Path(explicito).is_file():
-            sys.exit(f"No existe el ejecutable {explicito}")
-        return explicito
+        if Path(explicito).is_file():
+            return explicito
+        # No se aborta acá: puede haber otro motor disponible y una ruta mal
+        # escrita no debería impedir usarlo.
+        print(f"Aviso: no existe el ejecutable {explicito}\n", file=sys.stderr)
+        return None
 
     for nombre in NOMBRES_GS:
         if ruta := shutil.which(nombre):
@@ -183,13 +186,33 @@ def buscar_gs(explicito: str | None) -> str | None:
     return None
 
 
-def hay_pymupdf() -> bool:
+def buscar_pymupdf() -> str | None:
+    """Devuelve None si está disponible, o el motivo por el que no lo está.
+
+    Interesa el motivo concreto: en Windows es habitual tener varios Python
+    instalados e instalar el paquete en uno distinto del que corre el script,
+    y un "no está disponible" a secas no permite darse cuenta.
+    """
     try:
         import fitz  # noqa: F401
+    except Exception as e:
+        return f"no se pudo importar pymupdf ({type(e).__name__}: {e})"
+
+    try:
         from PIL import Image  # noqa: F401
-        return True
-    except ImportError:
-        return False
+    except Exception as e:
+        return f"no se pudo importar pillow ({type(e).__name__}: {e})"
+
+    return None
+
+
+def _detalle_entorno() -> str:
+    return (
+        f"\nEl script está corriendo con este Python:\n"
+        f"  {sys.executable}\n"
+        f"Instalá los paquetes en ese mismo intérprete:\n"
+        f'  "{sys.executable}" -m pip install --user pymupdf pillow\n'
+    )
 
 
 def resolver_motor(pedido: str, gs_explicito: str | None) -> tuple[str, str | None]:
@@ -201,20 +224,26 @@ def resolver_motor(pedido: str, gs_explicito: str | None) -> tuple[str, str | No
             sys.exit("No se encontró Ghostscript.\n\n" + AYUDA_GS)
         return "ghostscript", gs
 
+    problema = buscar_pymupdf()
+
     if pedido == "pymupdf":
-        if not hay_pymupdf():
-            sys.exit("Falta PyMuPDF y/o Pillow.\n\n" + AYUDA_PYMUPDF)
+        if problema:
+            sys.exit(f"No se puede usar PyMuPDF: {problema}\n"
+                     + _detalle_entorno() + "\n" + AYUDA_PYMUPDF)
         return "pymupdf", None
 
     # auto: Ghostscript comprime algo mejor, así que tiene prioridad.
     if gs:
         return "ghostscript", gs
-    if hay_pymupdf():
+    if not problema:
         return "pymupdf", None
 
     sys.exit(
         "No hay ningún motor de compresión disponible.\n"
-        "Instalá alguno de estos:\n\n" + AYUDA_GS + "\n" + AYUDA_PYMUPDF
+        f"  Ghostscript : no se encontró el ejecutable\n"
+        f"  PyMuPDF     : {problema}\n"
+        + _detalle_entorno()
+        + "\nInstalá alguno de los dos:\n\n" + AYUDA_GS + "\n" + AYUDA_PYMUPDF
     )
 
 
