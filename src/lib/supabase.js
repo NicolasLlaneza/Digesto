@@ -26,6 +26,20 @@ function urlBase(valor) {
     )
   }
 
+  // La URL del panel es la otra confusión habitual, y es peor que la del
+  // endpoint REST: al quedarnos con el origen, las peticiones se irían a
+  // supabase.com en vez de al proyecto. El ref está en la ruta, así que se
+  // puede decir exactamente cuál era el valor correcto.
+  if (/(^|\.)supabase\.com$/.test(url.hostname)) {
+    const ref = url.pathname.match(/\/project\/([a-z0-9]+)/i)?.[1]
+    throw new Error(
+      'VITE_SUPABASE_URL apunta al panel de Supabase, no al proyecto. ' +
+        (ref
+          ? `Usá "https://${ref}.supabase.co".`
+          : 'Usá la Project URL, con la forma https://<ref>.supabase.co')
+    )
+  }
+
   if (url.pathname !== '/' && url.pathname !== '') {
     console.warn(
       `VITE_SUPABASE_URL incluía la ruta "${url.pathname}", que se ignora. ` +
@@ -43,6 +57,11 @@ if (!anonKey) {
 // Base ya normalizada, para que todo el que arme URLs contra el proyecto
 // —incluida la Edge Function— parta del mismo valor.
 export const URL_BASE = urlBase(import.meta.env.VITE_SUPABASE_URL)
+
+// Se anuncia al arrancar: durante la puesta en marcha, saber contra qué
+// proyecto está hablando la app ahorra media hora de adivinanzas. No expone
+// nada, la URL viaja igual en cada petición.
+console.info('Supabase:', URL_BASE)
 
 // La sesión se persiste para no pedir login en cada recarga.
 export const supabase = createClient(URL_BASE, anonKey, {

@@ -28,3 +28,21 @@ describe('urlBase', () => {
     await expect(import('/workspace/digesto/src/lib/supabase.js')).rejects.toThrow(/no es una URL válida/)
   })
 })
+
+describe('URL del panel', () => {
+  beforeEach(() => vi.resetModules())
+
+  it('rechaza la URL del dashboard e indica la correcta', async () => {
+    vi.stubEnv('VITE_SUPABASE_URL', 'https://supabase.com/dashboard/project/mbicdtlocgjkxykrbiiu')
+    vi.stubEnv('VITE_SUPABASE_ANON_KEY', 'clave')
+    await expect(import('/workspace/digesto/src/lib/supabase.js'))
+      .rejects.toThrow('https://mbicdtlocgjkxykrbiiu.supabase.co')
+  })
+
+  it('rechaza el dashboard aunque no se pueda deducir el ref', async () => {
+    vi.stubEnv('VITE_SUPABASE_URL', 'https://supabase.com')
+    vi.stubEnv('VITE_SUPABASE_ANON_KEY', 'clave')
+    await expect(import('/workspace/digesto/src/lib/supabase.js'))
+      .rejects.toThrow(/apunta al panel/)
+  })
+})
