@@ -134,20 +134,86 @@ def procesar(origen: Path, destino: Path, perfil: str, dpi: int, dry_run: bool):
     return total_antes, total_despues, comprimidos, copiados
 
 
+def estimar(origen: Path, perfil: str, dpi: int, n: int):
+    """Comprime una muestra y extrapola el resultado a todo el árbol.
+
+    Sirve para saber en un minuto si el corpus entra en el free tier, sin
+    esperar a que Ghostscript procese cientos de archivos.
+    """
+    import tempfile
+
+    pdfs = sorted(p for p in origen.rglob("*.pdf") if p.stat().st_size >= MIN_BYTES)
+    if not pdfs:
+        sys.exit(f"No se encontraron PDFs de más de {MIN_BYTES // 1024} KB en {origen}")
+
+    otros = [p for p in origen.rglob("*")
+             if p.is_file() and p not in set(pdfs)]
+    bytes_pdfs = sum(p.stat().st_size for p in pdfs)
+    bytes_otros = sum(p.stat().st_size for p in otros)
+
+    # Muestra repartida en todo el listado, para no medir solo los primeros
+    # archivos (que suelen estar ordenados por fecha y no ser representativos).
+    n = min(n, len(pdfs))
+    paso = len(pdfs) / n
+    muestra = [pdfs[int(i * paso)] for i in range(n)]
+
+    print(f"Midiendo {n} de {len(pdfs)} PDFs ({mb(bytes_pdfs)} en total)\n")
+
+    antes = despues = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        for i, pdf in enumerate(muestra, 1):
+            tam = pdf.stat().st_size
+            salida = Path(tmp) / f"{i}.pdf"
+
+            if comprimir_pdf(pdf, salida, perfil, dpi):
+                nuevo = salida.stat().st_size
+                # Misma regla que el modo real: si no mejora, se conserva.
+                nuevo = min(nuevo, tam) if (1 - nuevo / tam) >= GANANCIA_MINIMA else tam
+            else:
+                nuevo = tam
+
+            antes += tam
+            despues += nuevo
+            print(f"  [{i}/{n}] {pdf.name}  {mb(tam)} -> {mb(nuevo)}  "
+                  f"(-{1 - nuevo / tam:.0%})")
+
+    ratio = despues / antes
+    estimado = bytes_pdfs * ratio + bytes_otros
+
+    print(f"\n{'=' * 46}")
+    print(f"  ratio medido en la muestra : {1 - ratio:.0%} de ahorro")
+    print(f"  tamaño actual del árbol    : {mb(bytes_pdfs + bytes_otros)}")
+    print(f"  estimado tras comprimir    : {mb(estimado)}")
+    print(f"\n  Free tier de R2 (10 GB):")
+    print(f"    esta carpeta usaría el {estimado / (10 * 1024 ** 3):.1%}")
+    cabidas = int(10 * 1024 ** 3 // estimado) if estimado else 0
+    print(f"    entrarían ~{cabidas} carpetas de este tamaño")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("origen", type=Path)
-    ap.add_argument("destino", type=Path)
+    ap.add_argument("destino", type=Path, nargs="?")
     ap.add_argument("--perfil", choices=PERFILES, default="ebook")
     ap.add_argument("--dpi", type=int, default=150,
                     help="resolución de las imágenes embebidas (default: 150)")
     ap.add_argument("--dry-run", action="store_true",
                     help="solo lista qué se comprimiría, sin escribir nada")
+    ap.add_argument("--muestra", type=int, metavar="N",
+                    help="comprime solo N archivos repartidos por el árbol y "
+                         "extrapola el resultado al total (no escribe DESTINO)")
     args = ap.parse_args()
 
     if not args.origen.is_dir():
         sys.exit(f"No existe el directorio {args.origen}")
+
+    if args.muestra:
+        estimar(args.origen, args.perfil, args.dpi, args.muestra)
+        return
+
+    if args.destino is None:
+        sys.exit("Falta el directorio DESTINO (o usá --muestra N para estimar)")
 
     print(f"Comprimiendo {args.origen} -> {args.destino} "
           f"(perfil {args.perfil}, {args.dpi} dpi)\n")
