@@ -1,23 +1,27 @@
 # Puesta en marcha
 
-Todo lo que sigue se hace dentro de free tiers. No hace falta tarjeta en ningún paso
-salvo en R2, donde Cloudflare la pide para verificar la cuenta pero no cobra mientras
-te mantengas debajo de los 10 GB.
+El digesto es de acceso restringido: hay que iniciar sesión para consultarlo, y
+los archivos no son alcanzables sin una sesión válida.
 
-## 1. Bucket en Cloudflare R2
+Todo esto entra en los free tiers. Cloudflare pide tarjeta para verificar la
+cuenta de R2 pero no cobra mientras te mantengas debajo de los 10 GB.
 
-1. Panel de Cloudflare → **R2** → *Create bucket*. Nombre: `digesto`. Región: *Automatic*.
-2. En el bucket → **Settings** → *Public access*: habilitá el dominio `r2.dev`.
-   Te da una URL tipo `https://pub-xxxxxxxx.r2.dev` — esa va en `VITE_R2_PUBLIC_URL`.
-   Para producción conviene conectar un dominio propio desde esa misma pantalla.
-3. **R2** → *Manage API tokens* → *Create API token*, permiso **Object Read & Write**
-   limitado al bucket `digesto`. Anotá el Access Key ID y el Secret.
+## 1. Bucket privado en Cloudflare R2
+
+1. Panel de Cloudflare → **R2** → *Create bucket*. Nombre: `digesto`.
+2. **No habilites el acceso público.** El bucket tiene que quedar cerrado: los
+   archivos se sirven con URLs firmadas que emite la Edge Function después de
+   validar la sesión. Si lo abrís, cualquiera con el link lee los PDFs sin
+   cuenta y el login deja de servir de algo.
+3. **R2** → *Manage API tokens* → *Create API token*, permiso **Object Read &
+   Write** limitado al bucket. Anotá el Access Key ID y el Secret.
 4. El Account ID está arriba a la derecha en el panel de R2.
 
 ### CORS
 
-Para que el visor de PDF embebido funcione, el bucket necesita permitir tu dominio.
-En el bucket → **Settings** → *CORS Policy*:
+El visor y los botones de imprimir y descargar leen el PDF por `fetch`, así que
+el bucket necesita permitir tu dominio. En el bucket → **Settings** → *CORS
+Policy*:
 
 ```json
 [
@@ -32,113 +36,110 @@ En el bucket → **Settings** → *CORS Policy*:
 
 ## 2. Base en Supabase
 
-Podés usar un proyecto nuevo o el que ya tenés: la tabla ocupa kilobytes y no toca
-el límite de storage, porque acá no se guarda ningún archivo.
-
-Aplicá la migración desde el **SQL Editor** del panel, pegando el contenido de
-`supabase/migrations/0001_init.sql`. O con la CLI:
+Aplicá las tres migraciones de `supabase/migrations/` en orden, desde el **SQL
+Editor** del panel o con la CLI:
 
 ```bash
 supabase link --project-ref TU_REF
 supabase db push
 ```
 
+| Migración | Qué hace |
+|---|---|
+| `0001_init.sql` | Tabla `documentos`, índices y búsqueda full-text |
+| `0002_acceso_privado.sql` | RLS: solo lectura con sesión iniciada |
+| `0003_facetas.sql` | Función que alimenta los selects de tipo y año |
+
 De **Settings → API** sacás la URL, la `anon key` (va al frontend) y la
 `service_role key` (solo para los scripts, nunca en el frontend).
 
-## 3. Variables de entorno
+## 3. Crear los usuarios
+
+No hay registro abierto: las cuentas se crean a mano.
+
+**Authentication → Users → Invite user**, con el correo de cada persona. Le
+llega un mail para definir su contraseña.
+
+Conviene además desactivar el alta espontánea por las dudas, en
+**Authentication → Providers → Email**: apagá *Enable sign ups*.
+
+## 4. Desplegar la Edge Function
+
+Es la pieza que valida la sesión y firma las URLs de R2.
+
+```bash
+supabase functions deploy documento-url
+
+supabase secrets set \
+  R2_ACCOUNT_ID=... \
+  R2_ACCESS_KEY_ID=... \
+  R2_SECRET_ACCESS_KEY=... \
+  R2_BUCKET=digesto \
+  ORIGEN_PERMITIDO=https://TU-DOMINIO
+```
+
+`ORIGEN_PERMITIDO` restringe qué sitio puede llamar a la función. En desarrollo
+podés usar `http://localhost:5173`.
+
+## 5. Variables de entorno del frontend
 
 ```bash
 cp .env.example .env
 ```
 
-Completá los valores de los dos pasos anteriores.
+Solo necesita `VITE_SUPABASE_URL` y `VITE_SUPABASE_ANON_KEY`. La dirección del
+bucket ya no va acá: el frontend nunca la conoce.
 
-## 4. Cargar los documentos
+## 6. Cargar los documentos
 
-Los tres scripts corren en orden.
-
-`compress.py` acepta dos motores de compresión y usa el que encuentre. Con
-cualquiera de los dos alcanza:
-
-**Ghostscript** — mejor resultado, pero en Windows el instalador pide permisos de
-administrador:
-
-```bash
-apt install ghostscript        # Linux
-brew install ghostscript       # macOS
-# Windows: https://ghostscript.com/releases/gsdnld.html
-```
-
-Si es una instalación portable y no está en el PATH, pasale la ruta:
-
-```bash
-python scripts/compress.py ORIGEN --muestra 20 --gs C:\ruta\a\gswin64c.exe
-```
-
-**PyMuPDF** — comprime un poco menos, pero se instala solo con pip y sin permisos
-de administrador, así que es la salida en una máquina restringida:
-
-```bash
-pip install --user pymupdf pillow
-```
-
-Con `--motor ghostscript` o `--motor pymupdf` forzás uno u otro.
-
-Los otros dos scripts sí necesitan sus paquetes, pero recién cuando vayas a subir:
+Los scripts corren en orden. Necesitan sus paquetes:
 
 ```bash
 pip install -r scripts/requirements.txt
 ```
 
-### 4.1 Comprimir
+### 6.1 ¿Comprimir?
 
-Antes de subir nada, medí cuánto podés bajar. El modo `--muestra` comprime unos
-pocos archivos repartidos por todo el árbol y extrapola, así tenés el número en un
-minuto en vez de esperar a que procese el corpus entero:
+Medí antes de decidir. `compress.py` no usa dependencias de pip —solo
+biblioteca estándar— y con `--muestra` estima el ahorro sin procesar todo:
 
 ```bash
-python scripts/compress.py ./originales --muestra 20
+python scripts/compress.py ./originales --muestra 40
 ```
 
-Cuando el resultado te cierre, la corrida real:
+Si el ahorro es bajo (por debajo de ~20 %), no vale la pena: son PDFs ya
+eficientes y comprimirlos agrega complejidad sin ganancia. Si es alto, la
+corrida real es:
 
 ```bash
 python scripts/compress.py ./originales ./comprimidos
 ```
 
-El script espeja la estructura de carpetas, comprime los PDFs a 150 DPI y **conserva
-el original cuando la compresión no gana nada** (los PDFs nativos de texto a veces
-crecen al recomprimirse). Al final te dice qué porcentaje del free tier de R2 vas a
-usar.
-
-Si necesitás más agresividad para el archivo histórico:
+Necesita **Ghostscript** o **PyMuPDF**, lo que tengas:
 
 ```bash
-python scripts/compress.py ./originales ./comprimidos --perfil screen --dpi 100
+apt install ghostscript              # o brew install ghostscript
+pip install --user pymupdf pillow    # alternativa sin permisos de admin
 ```
 
-### 4.2 Subir a R2
+### 6.2 Subir a R2
 
 ```bash
-python scripts/upload_r2.py ./comprimidos
+python scripts/upload_r2.py ./originales
 ```
 
-Es idempotente: los objetos que ya están con el mismo tamaño se saltan, así que
-podés cortarlo y retomarlo sin re-subir todo.
+Es idempotente: saltea lo que ya está con el mismo tamaño, así que podés
+cortarlo y retomarlo, y volver a correrlo cada mes para las altas nuevas.
 
-### 4.3 Indexar la metadata
+### 6.3 Indexar la metadata
 
 ```bash
-python scripts/index_docs.py ./comprimidos --dry-run
-python scripts/index_docs.py ./comprimidos
+python scripts/index_docs.py ./originales --dry-run
+python scripts/index_docs.py ./originales
 ```
 
-Deduce tipo, número y año del nombre del archivo. Corré primero el `--dry-run` para
-ver cuántos reconoce; los que no matcheen quedan listados al final.
-
-Reconoce la palabra completa y las abreviaturas habituales, con cualquier
-separador entre las partes:
+Deduce tipo, número y año del nombre del archivo. Reconoce la palabra completa
+y las abreviaturas habituales, con cualquier separador:
 
 ```
 DEC-1127-2025.pdf        decreto_045_2021.pdf
@@ -147,41 +148,39 @@ ORD 88 2024.pdf          resolución 12 2020.pdf
 DISP-7-2023.pdf          CONV-15-2021.pdf
 ```
 
-## 5. Levantar la app
+Hace upsert sobre `r2_key`, así que correrlo dos veces no duplica nada.
+
+## 7. Levantar la app
 
 ```bash
 npm install
 npm run dev
 ```
 
-## 6. Deploy en Cloudflare Pages
+## 8. Deploy en Cloudflare Pages
 
-Pages tiene ancho de banda ilimitado en el plan free, así que el deploy tampoco cuesta.
-
-1. Panel de Cloudflare → **Workers & Pages** → *Create* → *Pages* → conectá el repo.
+1. **Workers & Pages** → *Create* → *Pages* → conectá el repo.
 2. Build command: `npm run build` · Output directory: `dist`
-3. Cargá las tres variables `VITE_*` en *Settings → Environment variables*.
+3. Cargá `VITE_SUPABASE_URL` y `VITE_SUPABASE_ANON_KEY` en *Settings →
+   Environment variables*.
+4. Acordate de agregar el dominio final a la política de CORS del bucket y a
+   `ORIGEN_PERMITIDO`.
 
 ---
 
-## OCR: que los escaneos aparezcan en la búsqueda
+## OCR: que los escaneos aparezcan en la búsqueda por contenido
 
-Un PDF escaneado es una imagen: no tiene texto que Postgres pueda indexar.
-`index_docs.py` te avisa cuántos documentos quedaron "sin capa texto".
+Un PDF escaneado es una imagen: no tiene texto que Postgres pueda indexar, así
+que el filtro por contenido no lo va a encontrar (sí la búsqueda por número).
+`index_docs.py` informa cuántos documentos quedaron sin capa de texto.
 
-Para agregarles esa capa, antes de comprimir:
+Para agregársela, antes de subir:
 
 ```bash
 pip install ocrmypdf
-ocrmypdf --language spa --skip-text entrada.pdf salida.pdf
-```
-
-En lote:
-
-```bash
 find ./originales -name '*.pdf' -print0 | \
   xargs -0 -P 4 -I{} ocrmypdf --language spa --skip-text {} {}
 ```
 
-`--skip-text` deja intactos los PDFs que ya tienen texto, así que es seguro pasarlo
-sobre todo el árbol. Corré el OCR **antes** de `compress.py`.
+`--skip-text` deja intactos los que ya tienen texto, así que es seguro pasarlo
+sobre todo el árbol.

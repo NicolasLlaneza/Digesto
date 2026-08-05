@@ -1,22 +1,53 @@
 import { useEffect, useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import { ArrowLeft, Download } from 'lucide-react'
+import { ArrowLeft, Download, Printer } from 'lucide-react'
 import { obtenerDocumento } from '../lib/documentos'
-import { urlDocumento, formatearPeso } from '../lib/storage'
+import {
+  urlDocumento,
+  descargarDocumento,
+  imprimirDocumento,
+  formatearPeso,
+} from '../lib/storage'
 
 export default function DocumentoDetalle() {
   const { id } = useParams()
   const [doc, setDoc] = useState(null)
+  const [urlVisor, setUrlVisor] = useState(null)
+  const [ocupado, setOcupado] = useState(false)
   const [error, setError] = useState(null)
 
   useEffect(() => {
-    obtenerDocumento(id).then(setDoc).catch((e) => setError(e.message))
+    let vigente = true
+
+    obtenerDocumento(id)
+      .then(async (d) => {
+        if (!vigente) return
+        setDoc(d)
+        if (d.mime === 'application/pdf') {
+          setUrlVisor(await urlDocumento(d.id))
+        }
+      })
+      .catch((e) => vigente && setError(e.message))
+
+    return () => { vigente = false }
   }, [id])
 
-  if (error) return <p className="text-sm text-red-800">No se encontró el documento.</p>
+  async function accion(fn) {
+    setOcupado(true)
+    setError(null)
+    try {
+      await fn()
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setOcupado(false)
+    }
+  }
+
+  if (error && !doc) return <p role="alert" className="text-sm text-red-800">{error}</p>
   if (!doc) return <p className="text-sm text-boletin-600">Cargando…</p>
 
-  const url = urlDocumento(doc.r2_key)
+  const accionBtn = 'inline-flex items-center gap-2 rounded-md px-4 py-2 text-sm disabled:opacity-50'
 
   return (
     <article>
@@ -44,20 +75,30 @@ export default function DocumentoDetalle() {
 
       {doc.sumario && <p className="mt-4">{doc.sumario}</p>}
 
-      <a
-        href={url}
-        target="_blank"
-        rel="noreferrer"
-        className="mt-6 inline-flex items-center gap-2 rounded-md bg-boletin-900
-                   px-4 py-2 text-sm text-white"
-      >
-        <Download size={16} aria-hidden="true" />
-        Descargar {formatearPeso(doc.bytes)}
-      </a>
+      <div className="mt-6 flex flex-wrap gap-3">
+        <button
+          onClick={() => accion(() => imprimirDocumento(doc.id))}
+          disabled={ocupado}
+          className={`${accionBtn} bg-boletin-900 text-white`}
+        >
+          <Printer size={16} aria-hidden="true" /> Imprimir
+        </button>
 
-      {doc.mime === 'application/pdf' && (
+        <button
+          onClick={() => accion(() => descargarDocumento(doc.id, doc.titulo))}
+          disabled={ocupado}
+          className={`${accionBtn} border border-boletin-100 bg-white`}
+        >
+          <Download size={16} aria-hidden="true" />
+          Descargar {formatearPeso(doc.bytes)}
+        </button>
+      </div>
+
+      {error && <p role="alert" className="mt-3 text-sm text-red-800">{error}</p>}
+
+      {urlVisor && (
         <iframe
-          src={url}
+          src={urlVisor}
           title={doc.titulo}
           className="mt-6 w-full h-[75vh] rounded-lg border border-boletin-100 bg-white"
         />

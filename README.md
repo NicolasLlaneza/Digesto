@@ -1,10 +1,11 @@
 # Digesto Online
 
-Consulta pública de normativa (ordenanzas, decretos, resoluciones) con buscador y filtros.
+Consulta interna de normativa (decretos, resoluciones, ordenanzas) con acceso
+restringido por usuario.
 
-Arquitectura pensada para operar **dentro de los free tiers**: los documentos pesados
-viven en Cloudflare R2 (10 GB gratis, sin cargo de egress) y Supabase guarda únicamente
-la metadata, que ocupa kilobytes.
+Arquitectura pensada para operar **dentro de los free tiers**: los documentos
+viven en Cloudflare R2 y Supabase guarda únicamente la metadata, que ocupa
+kilobytes.
 
 ## Arquitectura
 
@@ -12,35 +13,47 @@ la metadata, que ocupa kilobytes.
                  ┌──────────────────────┐
    navegador ───▶│  App React (Vite)    │
                  │  Cloudflare Pages    │
-                 └──────┬──────────┬────┘
-                        │          │
-         metadata,      │          │   PDF / DOCX
-         filtros,       │          │   (descarga directa,
-         búsqueda       ▼          ▼    egress gratis)
-                 ┌────────────┐  ┌──────────────┐
-                 │  Supabase  │  │ Cloudflare R2│
-                 │  Postgres  │  │  bucket      │
-                 └────────────┘  └──────────────┘
+                 └──┬─────────┬─────────┘
+                    │         │
+      login,        │         │  1. pide URL firmada
+      metadata,     │         ▼
+      búsqueda      │   ┌──────────────────┐
+                    │   │  Edge Function   │──┐ valida la sesión
+                    ▼   │  documento-url   │  │ y firma contra R2
+              ┌────────────┐──────────────┘   │
+              │  Supabase  │◀─────────────────┘
+              │  Auth + PG │
+              └────────────┘
+
+                             2. descarga directa
+   navegador ─────────────────────────────────▶ ┌──────────────┐
+                                                │ R2 (privado) │
+                                                └──────────────┘
 ```
 
 Puntos clave del diseño:
 
-- **Supabase nunca almacena archivos.** Solo la tabla `documentos` con título, tipo,
-  número, fecha, tags y la *key* del objeto en R2. Con eso el uso de storage de Supabase
-  queda en cero y el free tier de 1 GB nunca se toca.
-- **R2 sirve los archivos con egress gratis.** Es la diferencia central contra S3 o el
-  propio Supabase Storage: en un digesto público la transferencia de salida es el costo
-  que se dispara, y en R2 no existe.
-- **La app es de solo lectura.** No hay auth ni backend: el bundle estático consulta
-  Postgres vía la API pública de Supabase con RLS en modo lectura. La carga de documentos
-  se hace desde `scripts/`, offline.
+- **Supabase nunca almacena archivos.** Solo la tabla `documentos` con tipo,
+  número, año, texto para búsqueda y la *key* del objeto en R2. El uso de
+  storage queda en cero y el límite de 1 GB del free tier nunca se toca.
+- **El bucket de R2 es privado.** Los archivos se sirven con URLs firmadas de
+  cinco minutos que emite una Edge Function tras validar el JWT. Proteger solo
+  el frontend no alcanzaría: los PDFs seguirían siendo accesibles por URL
+  directa.
+- **R2 no cobra egress**, que es la diferencia central contra S3 o el propio
+  Supabase Storage cuando los documentos se descargan seguido.
+- **No hay registro abierto.** Las cuentas se crean desde el panel de Supabase.
+
+## Funcionalidad
+
+- Búsqueda por número de decreto o resolución, sobre todos los años cargados
+- Filtro por contenido (full-text en español sobre el texto de las normas)
+- Filtros por tipo y año
+- Visor de PDF embebido, con impresión y descarga
 
 ## Puesta en marcha
 
-Ver [`docs/SETUP.md`](docs/SETUP.md) para el paso a paso completo (crear el bucket,
-aplicar la migración, comprimir y subir el primer lote).
-
-Resumen:
+Ver [`docs/SETUP.md`](docs/SETUP.md) para el paso a paso completo.
 
 ```bash
 npm install
@@ -50,14 +63,11 @@ npm run dev
 
 ## Flujo de carga de documentos
 
-Los tres scripts de `scripts/` están pensados para correr en ese orden:
-
 ```bash
-python scripts/compress.py  ./originales ./comprimidos   # 1. reduce peso
-python scripts/upload_r2.py ./comprimidos                # 2. sube a R2
-python scripts/index_docs.py ./comprimidos               # 3. inserta metadata
+python scripts/compress.py  ./originales --muestra 40   # 1. ¿conviene comprimir?
+python scripts/upload_r2.py ./originales                # 2. sube a R2
+python scripts/index_docs.py ./originales               # 3. inserta metadata
 ```
 
-El primero es el que decide si el proyecto entra o no en el free tier: los PDFs
-escaneados a 300 DPI suelen bajar entre 60 % y 85 % al recomprimirse a 150 DPI, sin
-pérdida de legibilidad en pantalla.
+Los dos últimos son idempotentes, así que para las altas mensuales alcanza con
+volver a correrlos sobre la carpeta completa: solo procesan lo nuevo.

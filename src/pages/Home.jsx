@@ -3,7 +3,13 @@ import { buscarDocumentos, obtenerFacetas, POR_PAGINA } from '../lib/documentos'
 import BarraFiltros from '../components/BarraFiltros'
 import TarjetaDocumento from '../components/TarjetaDocumento'
 
-const FILTROS_INICIALES = { texto: '', tipo: '', anio: '', pagina: 0 }
+const FILTROS_INICIALES = {
+  numero: '',
+  contenido: '',
+  tipo: '',
+  anio: '',
+  pagina: 0,
+}
 
 export default function Home() {
   const [filtros, setFiltros] = useState(FILTROS_INICIALES)
@@ -13,13 +19,17 @@ export default function Home() {
   const [error, setError] = useState(null)
 
   useEffect(() => {
-    obtenerFacetas().then(setFacetas).catch(() => {
-      // Sin facetas los selects quedan vacíos, pero la búsqueda sigue andando.
-    })
+    obtenerFacetas()
+      .then(setFacetas)
+      .catch(() => {
+        // Sin facetas los selects quedan vacíos, pero se puede seguir
+        // buscando por número y por contenido.
+      })
   }, [])
 
   useEffect(() => {
-    // Debounce del tipeo para no disparar una query por tecla.
+    // Se espera a que el usuario deje de tipear para no lanzar una consulta
+    // por tecla.
     const t = setTimeout(async () => {
       setCargando(true)
       setError(null)
@@ -39,10 +49,15 @@ export default function Home() {
 
   return (
     <>
-      <BarraFiltros filtros={filtros} facetas={facetas} onCambio={setFiltros} />
+      <BarraFiltros
+        filtros={filtros}
+        facetas={facetas}
+        onCambio={setFiltros}
+        onLimpiar={() => setFiltros(FILTROS_INICIALES)}
+      />
 
       {error && (
-        <p className="rounded-md bg-red-50 text-red-800 px-4 py-3 text-sm">
+        <p role="alert" className="rounded-md bg-red-50 text-red-800 px-4 py-3 text-sm">
           No se pudo cargar el listado: {error}
         </p>
       )}

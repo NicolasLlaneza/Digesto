@@ -2,24 +2,29 @@ import { supabase } from './supabase'
 
 export const POR_PAGINA = 20
 
-/**
- * Busca documentos aplicando los filtros de la UI.
- *
- * La búsqueda de texto usa el índice GIN sobre la columna generada `busqueda`,
- * así que filtra en Postgres y no trae el corpus al cliente.
- */
-export async function buscarDocumentos({ texto, tipo, anio, pagina = 0 }) {
-  let q = supabase
-    .from('documentos')
-    .select('id, tipo, numero, anio, titulo, sumario, tags, r2_key, bytes, vigente',
-            { count: 'exact' })
+const CAMPOS = 'id, tipo, numero, anio, titulo, sumario, tags, r2_key, bytes, vigente'
 
-  if (texto?.trim()) {
-    q = q.textSearch('busqueda', texto.trim(), {
+/**
+ * Busca documentos combinando los filtros de la UI.
+ *
+ * Los dos modos de búsqueda son independientes y se pueden combinar: por
+ * número (para ir a un decreto concreto) y por contenido (para encontrar
+ * normativa sobre un tema). Sin año seleccionado busca en todos los cargados.
+ */
+export async function buscarDocumentos({ numero, contenido, tipo, anio, pagina = 0 }) {
+  let q = supabase.from('documentos').select(CAMPOS, { count: 'exact' })
+
+  // El número se guarda como texto porque hay expedientes con letras, así que
+  // se compara como texto y no numéricamente.
+  if (numero?.trim()) q = q.eq('numero', numero.trim().replace(/^0+/, ''))
+
+  if (contenido?.trim()) {
+    q = q.textSearch('busqueda', contenido.trim(), {
       type: 'websearch',
       config: 'spanish',
     })
   }
+
   if (tipo) q = q.eq('tipo', tipo)
   if (anio) q = q.eq('anio', Number(anio))
 
@@ -44,12 +49,14 @@ export async function obtenerDocumento(id) {
   return data
 }
 
-/** Años y tipos presentes, para poblar los selects de filtro. */
+/**
+ * Tipos y años presentes, para poblar los selects.
+ *
+ * Se consulta una vista agregada en lugar de traer las 5700+ filas y hacer el
+ * distinct en el navegador.
+ */
 export async function obtenerFacetas() {
-  const { data, error } = await supabase
-    .from('documentos')
-    .select('tipo, anio')
-
+  const { data, error } = await supabase.rpc('facetas_documentos')
   if (error) throw error
 
   return {

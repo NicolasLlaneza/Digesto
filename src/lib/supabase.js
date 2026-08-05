@@ -9,7 +9,10 @@ if (!url || !anonKey) {
   )
 }
 
-// El digesto es de solo lectura y no tiene login: no hace falta persistir sesión.
+// La sesión se persiste para no pedir login en cada recarga.
 export const supabase = createClient(url, anonKey, {
-  auth: { persistSession: false },
+  auth: {
+    persistSession: true,
+    autoRefreshToken: true,
+  },
 })
