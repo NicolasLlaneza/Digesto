@@ -16,9 +16,18 @@ export default function Login() {
 
     const { error } = await ingresar(email, password)
     if (error) {
-      // El mensaje de Supabase viene en inglés y distingue entre usuario
-      // inexistente y contraseña incorrecta, lo que ayuda a enumerar cuentas.
-      setError('Usuario o contraseña incorrectos.')
+      console.error('Fallo el ingreso:', error)
+
+      // Un 400 es credenciales mal puestas y se responde en genérico, porque
+      // distinguir "no existe el usuario" de "contraseña incorrecta" permite
+      // averiguar qué cuentas existen. Cualquier otra cosa —proyecto mal
+      // configurado, red, CORS— no es sensible y conviene mostrarla: es
+      // justo lo que hace falta para poder arreglarla.
+      setError(
+        error.status === 400
+          ? 'Usuario o contraseña incorrectos.'
+          : `No se pudo conectar: ${error.message}`
+      )
       setEnviando(false)
     }
     // Con éxito no se toca el estado: el cambio de sesión desmonta este
