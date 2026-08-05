@@ -15,8 +15,8 @@ create table if not exists documentos (
   sumario       text,                    -- resumen corto, se muestra en el listado
   tags          text[] not null default '{}',
 
-  -- Ubicación del archivo en R2. La URL pública se arma en el frontend
-  -- concatenando VITE_R2_PUBLIC_URL con esta key.
+  -- Ubicación del archivo dentro del bucket de R2. La Edge Function la lee de
+  -- acá para firmar la URL de descarga.
   r2_key        text not null unique,
   mime          text not null default 'application/pdf',
   bytes         bigint,
@@ -46,12 +46,9 @@ alter table documentos
 
 create index if not exists documentos_busqueda_idx on documentos using gin (busqueda);
 
--- El digesto es público: cualquiera lee, nadie escribe desde el cliente.
--- La carga se hace con la service_role key desde scripts/index_docs.py.
+-- RLS activo y sin políticas: por defecto queda todo denegado. Las de lectura
+-- las define 0002_acceso_privado.sql.
+--
+-- La escritura no tiene política en ningún momento: la carga corre con la
+-- service_role key desde scripts/index_docs.py, que salta RLS.
 alter table documentos enable row level security;
-
-drop policy if exists "lectura publica" on documentos;
-create policy "lectura publica"
-  on documentos for select
-  to anon, authenticated
-  using (true);
