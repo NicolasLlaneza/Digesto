@@ -54,8 +54,10 @@ PERFILES = {
     "printer": "/printer",  # 300 dpi - conserva calidad de impresión
 }
 
-# Debajo de este tamaño no vale la pena tocar el archivo.
-MIN_BYTES = 300 * 1024
+# Debajo de este tamaño no vale la pena tocar el archivo. Se ajusta con
+# --min-kb: un corpus de miles de documentos cortos puede tener casi todo su
+# peso en archivos chicos, y un umbral alto lo dejaría entero sin comprimir.
+MIN_BYTES = 50 * 1024
 
 # Si la compresión no gana al menos esto, se conserva el original.
 GANANCIA_MINIMA = 0.05
@@ -331,7 +333,18 @@ def estimar(origen: Path, perfil: str, dpi: int, n: int):
     paso = len(pdfs) / n
     muestra = [pdfs[int(i * paso)] for i in range(n)]
 
-    print(f"Midiendo {n} de {len(pdfs)} PDFs ({mb(bytes_pdfs)} en total)\n")
+    total_arbol = bytes_pdfs + bytes_otros
+    cobertura = bytes_pdfs / total_arbol if total_arbol else 0
+
+    print(f"Midiendo {n} de {len(pdfs)} PDFs ({mb(bytes_pdfs)} de {mb(total_arbol)})")
+    print(f"Cobertura: {cobertura:.0%} del peso del árbol\n")
+
+    # Si el umbral deja afuera la mayor parte del corpus, la extrapolación no
+    # dice nada útil: el ahorro se aplica sobre una fracción del total.
+    if cobertura < 0.80:
+        print(f"  AVISO: {mb(bytes_otros)} quedan fuera de la medición por estar\n"
+              f"  bajo el umbral de {MIN_BYTES // 1024} KB. Bajalo con --min-kb\n"
+              f"  para incluirlos.\n", file=sys.stderr)
 
     antes = despues = 0
     with tempfile.TemporaryDirectory() as tmp:
@@ -365,6 +378,8 @@ def estimar(origen: Path, perfil: str, dpi: int, n: int):
 
 
 def main():
+    global GS, MOTOR, MIN_BYTES
+
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("origen", type=Path)
@@ -383,12 +398,15 @@ def main():
     ap.add_argument("--motor", choices=("auto", "ghostscript", "pymupdf"),
                     default="auto",
                     help="motor de compresión (default: el que esté disponible)")
+    ap.add_argument("--min-kb", type=int, default=MIN_BYTES // 1024, metavar="KB",
+                    help=f"no tocar archivos menores a este tamaño "
+                         f"(default: {MIN_BYTES // 1024})")
     args = ap.parse_args()
 
     if not args.origen.is_dir():
         sys.exit(f"No existe el directorio {args.origen}")
 
-    global GS, MOTOR
+    MIN_BYTES = args.min_kb * 1024
     MOTOR, GS = resolver_motor(args.motor, args.gs)
     print(f"Motor: {MOTOR}\n")
 
