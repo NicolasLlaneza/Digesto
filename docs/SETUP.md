@@ -1,0 +1,150 @@
+# Puesta en marcha
+
+Todo lo que sigue se hace dentro de free tiers. No hace falta tarjeta en ningún paso
+salvo en R2, donde Cloudflare la pide para verificar la cuenta pero no cobra mientras
+te mantengas debajo de los 10 GB.
+
+## 1. Bucket en Cloudflare R2
+
+1. Panel de Cloudflare → **R2** → *Create bucket*. Nombre: `digesto`. Región: *Automatic*.
+2. En el bucket → **Settings** → *Public access*: habilitá el dominio `r2.dev`.
+   Te da una URL tipo `https://pub-xxxxxxxx.r2.dev` — esa va en `VITE_R2_PUBLIC_URL`.
+   Para producción conviene conectar un dominio propio desde esa misma pantalla.
+3. **R2** → *Manage API tokens* → *Create API token*, permiso **Object Read & Write**
+   limitado al bucket `digesto`. Anotá el Access Key ID y el Secret.
+4. El Account ID está arriba a la derecha en el panel de R2.
+
+### CORS
+
+Para que el visor de PDF embebido funcione, el bucket necesita permitir tu dominio.
+En el bucket → **Settings** → *CORS Policy*:
+
+```json
+[
+  {
+    "AllowedOrigins": ["http://localhost:5173", "https://TU-DOMINIO"],
+    "AllowedMethods": ["GET", "HEAD"],
+    "AllowedHeaders": ["*"],
+    "MaxAgeSeconds": 3600
+  }
+]
+```
+
+## 2. Base en Supabase
+
+Podés usar un proyecto nuevo o el que ya tenés: la tabla ocupa kilobytes y no toca
+el límite de storage, porque acá no se guarda ningún archivo.
+
+Aplicá la migración desde el **SQL Editor** del panel, pegando el contenido de
+`supabase/migrations/0001_init.sql`. O con la CLI:
+
+```bash
+supabase link --project-ref TU_REF
+supabase db push
+```
+
+De **Settings → API** sacás la URL, la `anon key` (va al frontend) y la
+`service_role key` (solo para los scripts, nunca en el frontend).
+
+## 3. Variables de entorno
+
+```bash
+cp .env.example .env
+```
+
+Completá los valores de los dos pasos anteriores.
+
+## 4. Cargar los documentos
+
+Los tres scripts corren en orden. Instalá las dependencias una sola vez:
+
+```bash
+pip install -r scripts/requirements.txt
+apt install ghostscript          # o: brew install ghostscript
+```
+
+### 4.1 Comprimir
+
+Antes de subir nada, medí cuánto podés bajar:
+
+```bash
+python scripts/compress.py ./originales ./comprimidos --dry-run
+python scripts/compress.py ./originales ./comprimidos
+```
+
+El script espeja la estructura de carpetas, comprime los PDFs a 150 DPI y **conserva
+el original cuando la compresión no gana nada** (los PDFs nativos de texto a veces
+crecen al recomprimirse). Al final te dice qué porcentaje del free tier de R2 vas a
+usar.
+
+Si necesitás más agresividad para el archivo histórico:
+
+```bash
+python scripts/compress.py ./originales ./comprimidos --perfil screen --dpi 100
+```
+
+### 4.2 Subir a R2
+
+```bash
+python scripts/upload_r2.py ./comprimidos
+```
+
+Es idempotente: los objetos que ya están con el mismo tamaño se saltan, así que
+podés cortarlo y retomarlo sin re-subir todo.
+
+### 4.3 Indexar la metadata
+
+```bash
+python scripts/index_docs.py ./comprimidos --dry-run
+python scripts/index_docs.py ./comprimidos
+```
+
+Deduce tipo, número y año del nombre del archivo. Corré primero el `--dry-run` para
+ver cuántos reconoce; los que no matcheen quedan listados al final.
+
+Conviene nombrar los archivos así:
+
+```
+ordenanza-1234-2019.pdf
+decreto-045-2021.pdf
+resolucion-12-2020.pdf
+```
+
+## 5. Levantar la app
+
+```bash
+npm install
+npm run dev
+```
+
+## 6. Deploy en Cloudflare Pages
+
+Pages tiene ancho de banda ilimitado en el plan free, así que el deploy tampoco cuesta.
+
+1. Panel de Cloudflare → **Workers & Pages** → *Create* → *Pages* → conectá el repo.
+2. Build command: `npm run build` · Output directory: `dist`
+3. Cargá las tres variables `VITE_*` en *Settings → Environment variables*.
+
+---
+
+## OCR: que los escaneos aparezcan en la búsqueda
+
+Un PDF escaneado es una imagen: no tiene texto que Postgres pueda indexar.
+`index_docs.py` te avisa cuántos documentos quedaron "sin capa texto".
+
+Para agregarles esa capa, antes de comprimir:
+
+```bash
+pip install ocrmypdf
+ocrmypdf --language spa --skip-text entrada.pdf salida.pdf
+```
+
+En lote:
+
+```bash
+find ./originales -name '*.pdf' -print0 | \
+  xargs -0 -P 4 -I{} ocrmypdf --language spa --skip-text {} {}
+```
+
+`--skip-text` deja intactos los PDFs que ya tienen texto, así que es seguro pasarlo
+sobre todo el árbol. Corré el OCR **antes** de `compress.py`.

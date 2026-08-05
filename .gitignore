@@ -1,0 +1,19 @@
+node_modules/
+dist/
+.env
+.env.local
+*.local
+
+# Los documentos nunca se versionan: viven en R2.
+originales/
+comprimidos/
+*.pdf
+*.docx
+
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+.DS_Store
+*.log
