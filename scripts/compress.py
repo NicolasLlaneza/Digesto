@@ -7,10 +7,16 @@ así DESTINO siempre queda como un reemplazo completo de ORIGEN.
 
     python scripts/compress.py ./originales ./comprimidos
     python scripts/compress.py ./originales ./comprimidos --dpi 200
-    python scripts/compress.py ./originales ./comprimidos --dry-run
+    python scripts/compress.py ./originales --muestra 20      # solo estimar
 
-Requiere Ghostscript en el PATH:
+No usa dependencias de pip: solo biblioteca estándar. Lo único externo es
+Ghostscript, que puede estar en el PATH...
+
     apt install ghostscript      /  brew install ghostscript
+
+...o ser una instalación portable, útil cuando no hay permisos de admin:
+
+    python scripts/compress.py ORIGEN --muestra 20 --gs C:\\gs\\bin\\gswin64c.exe
 """
 
 import argparse
@@ -18,6 +24,13 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+# Nombres del ejecutable según plataforma. En Windows el binario de consola
+# es gswin64c.exe; el que no lleva "c" abre una ventana y no sirve acá.
+NOMBRES_GS = ("gs", "gswin64c", "gswin32c")
+
+# Se resuelve una sola vez en main().
+GS = "gs"
 
 # Perfiles de Ghostscript. 150 DPI es el punto donde un escaneo sigue siendo
 # cómodo de leer en pantalla y pesa una fracción del original.
@@ -41,7 +54,7 @@ def mb(n: int) -> str:
 def comprimir_pdf(origen: Path, destino: Path, perfil: str, dpi: int) -> bool:
     """Devuelve True si el PDF comprimido quedó en `destino`."""
     cmd = [
-        "gs",
+        GS,
         "-sDEVICE=pdfwrite",
         "-dCompatibilityLevel=1.4",
         f"-dPDFSETTINGS={PERFILES[perfil]}",
@@ -64,13 +77,37 @@ def comprimir_pdf(origen: Path, destino: Path, perfil: str, dpi: int) -> bool:
         subprocess.run(cmd, check=True, capture_output=True, timeout=300)
         return destino.exists() and destino.stat().st_size > 0
     except subprocess.TimeoutExpired:
-        print(f"    timeout, se conserva el original", file=sys.stderr)
+        print("    timeout, se conserva el original", file=sys.stderr)
     except subprocess.CalledProcessError as e:
         detalle = e.stderr.decode(errors="replace").strip().splitlines()
         print(f"    ghostscript falló: {detalle[-1] if detalle else e}", file=sys.stderr)
-    except FileNotFoundError:
-        sys.exit("ghostscript no está instalado. Instalalo con: apt install ghostscript")
     return False
+
+
+def resolver_gs(explicito: str | None) -> str:
+    """Ubica el ejecutable de Ghostscript.
+
+    Acepta una ruta explícita para instalaciones portables, que es la salida
+    cuando no hay permisos para instalar nada en la máquina.
+    """
+    if explicito:
+        if not Path(explicito).is_file():
+            sys.exit(f"No existe el ejecutable {explicito}")
+        return explicito
+
+    for nombre in NOMBRES_GS:
+        if ruta := shutil.which(nombre):
+            return ruta
+
+    sys.exit(
+        "No se encontró Ghostscript en el PATH.\n"
+        "  Linux   : apt install ghostscript\n"
+        "  macOS   : brew install ghostscript\n"
+        "  Windows : https://ghostscript.com/releases/gsdnld.html\n"
+        "\n"
+        "Si no podés instalarlo, descargá la versión portable y pasale la ruta:\n"
+        "  python scripts/compress.py ORIGEN --muestra 20 --gs C:\\gs\\bin\\gswin64c.exe"
+    )
 
 
 def procesar(origen: Path, destino: Path, perfil: str, dpi: int, dry_run: bool):
@@ -203,10 +240,16 @@ def main():
     ap.add_argument("--muestra", type=int, metavar="N",
                     help="comprime solo N archivos repartidos por el árbol y "
                          "extrapola el resultado al total (no escribe DESTINO)")
+    ap.add_argument("--gs", metavar="RUTA",
+                    help="ruta al ejecutable de Ghostscript, para instalaciones "
+                         "portables que no están en el PATH")
     args = ap.parse_args()
 
     if not args.origen.is_dir():
         sys.exit(f"No existe el directorio {args.origen}")
+
+    global GS
+    GS = resolver_gs(args.gs)
 
     if args.muestra:
         estimar(args.origen, args.perfil, args.dpi, args.muestra)

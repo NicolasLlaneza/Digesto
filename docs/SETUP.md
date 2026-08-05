@@ -56,19 +56,37 @@ Completá los valores de los dos pasos anteriores.
 
 ## 4. Cargar los documentos
 
-Los tres scripts corren en orden. Instalá las dependencias una sola vez:
+Los tres scripts corren en orden.
+
+`compress.py` **no usa dependencias de pip** —solo biblioteca estándar—, así que
+para medir cuánto vas a ahorrar alcanza con tener Python y Ghostscript. Los otros
+dos sí necesitan paquetes:
 
 ```bash
-pip install -r scripts/requirements.txt
-apt install ghostscript          # o: brew install ghostscript
+apt install ghostscript                  # o: brew install ghostscript
+pip install -r scripts/requirements.txt  # solo para upload_r2 e index_docs
+```
+
+Si no tenés permisos para instalar Ghostscript, bajá la versión portable y pasale
+la ruta con `--gs`:
+
+```bash
+python scripts/compress.py ORIGEN --muestra 20 --gs C:\gs\bin\gswin64c.exe
 ```
 
 ### 4.1 Comprimir
 
-Antes de subir nada, medí cuánto podés bajar:
+Antes de subir nada, medí cuánto podés bajar. El modo `--muestra` comprime unos
+pocos archivos repartidos por todo el árbol y extrapola, así tenés el número en un
+minuto en vez de esperar a que procese el corpus entero:
 
 ```bash
-python scripts/compress.py ./originales ./comprimidos --dry-run
+python scripts/compress.py ./originales --muestra 20
+```
+
+Cuando el resultado te cierre, la corrida real:
+
+```bash
 python scripts/compress.py ./originales ./comprimidos
 ```
 
