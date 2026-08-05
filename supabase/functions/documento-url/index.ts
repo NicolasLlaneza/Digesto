@@ -16,8 +16,12 @@ const VALIDEZ_SEGUNDOS = 300;
 
 const cors = {
   "Access-Control-Allow-Origin": Deno.env.get("ORIGEN_PERMITIDO") ?? "*",
-  "Access-Control-Allow-Headers": "authorization, content-type",
+  // apikey y x-client-info los agrega el cliente de Supabase por su cuenta,
+  // así que tienen que estar permitidos aunque este código no los use.
+  "Access-Control-Allow-Headers":
+    "authorization, content-type, apikey, x-client-info",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Max-Age": "3600",
 };
 
 function json(body: unknown, status = 200) {

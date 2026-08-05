@@ -1,0 +1,13 @@
+project_id = "digesto"
+
+[functions.documento-url]
+# El gateway de Supabase valida el JWT antes de invocar la función, pero el
+# navegador nunca manda el header Authorization en el preflight: por diseño,
+# OPTIONS viaja sin credenciales. Con la validación en el gateway, ese
+# preflight se rechaza con 401 y el navegador cancela la petición real, así
+# que la función queda inutilizable desde el frontend.
+#
+# La validación se hace dentro de la función, con supabase.auth.getUser():
+# sin sesión válida devuelve 401 antes de firmar nada. Lo que cambia es
+# quién valida, no si se valida.
+verify_jwt = false

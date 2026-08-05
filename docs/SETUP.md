@@ -68,7 +68,7 @@ Conviene además desactivar el alta espontánea por las dudas, en
 Es la pieza que valida la sesión y firma las URLs de R2.
 
 ```bash
-supabase functions deploy documento-url
+supabase functions deploy documento-url --no-verify-jwt
 
 supabase secrets set \
   R2_ACCOUNT_ID=... \
@@ -80,6 +80,26 @@ supabase secrets set \
 
 `ORIGEN_PERMITIDO` restringe qué sitio puede llamar a la función. En desarrollo
 podés usar `http://localhost:5173`.
+
+### Hay que desactivar la validación de JWT del gateway
+
+Si la desplegás desde el panel, entrá a la función → **Settings** → apagá
+**Enforce JWT Verification**. Con la CLI lo cubre el `--no-verify-jwt` de
+arriba, y queda asentado en `supabase/config.toml`.
+
+No es una concesión de seguridad: la función valida el JWT por su cuenta con
+`supabase.auth.getUser()` y devuelve 401 antes de firmar nada. Lo que cambia es
+quién valida.
+
+Hace falta porque el navegador manda un preflight `OPTIONS` antes del POST, y
+por diseño ese preflight **no lleva el header `Authorization`**. Con la
+validación en el gateway, se rechaza con 401 y el navegador cancela la petición
+real. El síntoma es un error de CORS que no menciona el JWT por ningún lado:
+
+```
+Response to preflight request doesn't pass access control check:
+It does not have HTTP ok status.
+```
 
 ## 5. Variables de entorno del frontend
 
