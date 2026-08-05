@@ -1,4 +1,4 @@
-import { supabase } from './supabase'
+import { supabase, URL_BASE } from './supabase'
 
 // Las URLs firmadas duran poco, así que se reusan mientras siguen vigentes
 // en vez de pedir una nueva por cada click.
@@ -19,7 +19,7 @@ export async function urlDocumento(id) {
   if (!session) throw new Error('No hay sesión activa')
 
   const respuesta = await fetch(
-    `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/documento-url`,
+    `${URL_BASE}/functions/v1/documento-url`,
     {
       method: 'POST',
       headers: {
