@@ -58,20 +58,37 @@ Completá los valores de los dos pasos anteriores.
 
 Los tres scripts corren en orden.
 
-`compress.py` **no usa dependencias de pip** —solo biblioteca estándar—, así que
-para medir cuánto vas a ahorrar alcanza con tener Python y Ghostscript. Los otros
-dos sí necesitan paquetes:
+`compress.py` acepta dos motores de compresión y usa el que encuentre. Con
+cualquiera de los dos alcanza:
+
+**Ghostscript** — mejor resultado, pero en Windows el instalador pide permisos de
+administrador:
 
 ```bash
-apt install ghostscript                  # o: brew install ghostscript
-pip install -r scripts/requirements.txt  # solo para upload_r2 e index_docs
+apt install ghostscript        # Linux
+brew install ghostscript       # macOS
+# Windows: https://ghostscript.com/releases/gsdnld.html
 ```
 
-Si no tenés permisos para instalar Ghostscript, bajá la versión portable y pasale
-la ruta con `--gs`:
+Si es una instalación portable y no está en el PATH, pasale la ruta:
 
 ```bash
-python scripts/compress.py ORIGEN --muestra 20 --gs C:\gs\bin\gswin64c.exe
+python scripts/compress.py ORIGEN --muestra 20 --gs C:\ruta\a\gswin64c.exe
+```
+
+**PyMuPDF** — comprime un poco menos, pero se instala solo con pip y sin permisos
+de administrador, así que es la salida en una máquina restringida:
+
+```bash
+pip install --user pymupdf pillow
+```
+
+Con `--motor ghostscript` o `--motor pymupdf` forzás uno u otro.
+
+Los otros dos scripts sí necesitan sus paquetes, pero recién cuando vayas a subir:
+
+```bash
+pip install -r scripts/requirements.txt
 ```
 
 ### 4.1 Comprimir

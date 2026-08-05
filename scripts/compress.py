@@ -9,17 +9,26 @@ así DESTINO siempre queda como un reemplazo completo de ORIGEN.
     python scripts/compress.py ./originales ./comprimidos --dpi 200
     python scripts/compress.py ./originales --muestra 20      # solo estimar
 
-No usa dependencias de pip: solo biblioteca estándar. Lo único externo es
-Ghostscript, que puede estar en el PATH...
+Hay dos motores de compresión y por defecto usa el que encuentre disponible:
 
-    apt install ghostscript      /  brew install ghostscript
+  ghostscript  Binario externo. Da el mejor resultado, pero instalarlo en
+               Windows suele pedir permisos de administrador.
 
-...o ser una instalación portable, útil cuando no hay permisos de admin:
+                   apt install ghostscript   /   brew install ghostscript
+                   Windows: https://ghostscript.com/releases/gsdnld.html
 
-    python scripts/compress.py ORIGEN --muestra 20 --gs C:\\gs\\bin\\gswin64c.exe
+               Si es una instalación portable, pasale la ruta:
+                   --gs C:\\ruta\\a\\gswin64c.exe
+
+  pymupdf      Solo paquetes de pip, sin permisos de administrador:
+
+                   pip install --user pymupdf pillow
+
+Con `--motor` se fuerza uno u otro.
 """
 
 import argparse
+import io
 import shutil
 import subprocess
 import sys
@@ -29,8 +38,13 @@ from pathlib import Path
 # es gswin64c.exe; el que no lleva "c" abre una ventana y no sirve acá.
 NOMBRES_GS = ("gs", "gswin64c", "gswin32c")
 
-# Se resuelve una sola vez en main().
+# Se resuelven una sola vez en main().
 GS = "gs"
+MOTOR = "ghostscript"
+
+# Calidad JPEG del motor pymupdf. 75 es el punto donde un escaneo de texto
+# todavía se lee limpio sin artefactos visibles.
+CALIDAD_JPEG = 75
 
 # Perfiles de Ghostscript. 150 DPI es el punto donde un escaneo sigue siendo
 # cómodo de leer en pantalla y pesa una fracción del original.
@@ -53,6 +67,65 @@ def mb(n: int) -> str:
 
 def comprimir_pdf(origen: Path, destino: Path, perfil: str, dpi: int) -> bool:
     """Devuelve True si el PDF comprimido quedó en `destino`."""
+    if MOTOR == "pymupdf":
+        return comprimir_pymupdf(origen, destino, dpi)
+    return comprimir_ghostscript(origen, destino, perfil, dpi)
+
+
+def comprimir_pymupdf(origen: Path, destino: Path, dpi: int) -> bool:
+    """Remuestrea a JPEG las imágenes embebidas, sin binarios externos.
+
+    Ataca lo mismo que Ghostscript —el peso de un escaneo está en sus
+    imágenes— pero con paquetes de pip, que es lo instalable en una máquina
+    sin permisos de administrador.
+    """
+    import fitz
+    from PIL import Image
+
+    try:
+        doc = fitz.open(origen)
+    except Exception as e:
+        print(f"    no se pudo abrir: {e}", file=sys.stderr)
+        return False
+
+    try:
+        for pagina in doc:
+            # El ancho de página está en puntos (1/72"), así que de ahí sale
+            # cuántos píxeles hacen falta para el DPI pedido.
+            objetivo = max(1, int(pagina.rect.width / 72 * dpi))
+
+            for imagen in pagina.get_images(full=True):
+                xref = imagen[0]
+                try:
+                    original = doc.extract_image(xref)["image"]
+                    im = Image.open(io.BytesIO(original))
+
+                    if im.width > objetivo:
+                        alto = max(1, int(im.height * objetivo / im.width))
+                        im = im.resize((objetivo, alto), Image.LANCZOS)
+                    if im.mode not in ("RGB", "L"):
+                        im = im.convert("RGB")
+
+                    buf = io.BytesIO()
+                    im.save(buf, format="JPEG", quality=CALIDAD_JPEG, optimize=True)
+
+                    # Solo se reemplaza si la versión nueva pesa menos.
+                    if buf.tell() < len(original):
+                        pagina.replace_image(xref, stream=buf.getvalue())
+                except Exception:
+                    # Una imagen problemática no invalida el resto del archivo.
+                    continue
+
+        doc.save(destino, garbage=4, deflate=True)
+        return destino.exists() and destino.stat().st_size > 0
+    except Exception as e:
+        print(f"    pymupdf falló: {e}", file=sys.stderr)
+        return False
+    finally:
+        doc.close()
+
+
+def comprimir_ghostscript(origen: Path, destino: Path, perfil: str, dpi: int) -> bool:
     cmd = [
         GS,
         "-sDEVICE=pdfwrite",
@@ -84,12 +157,21 @@ def comprimir_pdf(origen: Path, destino: Path, perfil: str, dpi: int) -> bool:
     return False
 
 
-def resolver_gs(explicito: str | None) -> str:
-    """Ubica el ejecutable de Ghostscript.
+AYUDA_GS = (
+    "  Ghostscript (mejor resultado, suele pedir permisos de administrador)\n"
+    "    Linux   : apt install ghostscript\n"
+    "    macOS   : brew install ghostscript\n"
+    "    Windows : https://ghostscript.com/releases/gsdnld.html\n"
+    "    Portable: pasale la ruta con --gs C:\\ruta\\a\\gswin64c.exe\n"
+)
 
-    Acepta una ruta explícita para instalaciones portables, que es la salida
-    cuando no hay permisos para instalar nada en la máquina.
-    """
+AYUDA_PYMUPDF = (
+    "  PyMuPDF (solo pip, sin permisos de administrador)\n"
+    "    pip install --user pymupdf pillow\n"
+)
+
+
+def buscar_gs(explicito: str | None) -> str | None:
     if explicito:
         if not Path(explicito).is_file():
             sys.exit(f"No existe el ejecutable {explicito}")
@@ -98,15 +180,41 @@ def resolver_gs(explicito: str | None) -> str:
     for nombre in NOMBRES_GS:
         if ruta := shutil.which(nombre):
             return ruta
+    return None
+
+
+def hay_pymupdf() -> bool:
+    try:
+        import fitz  # noqa: F401
+        from PIL import Image  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def resolver_motor(pedido: str, gs_explicito: str | None) -> tuple[str, str | None]:
+    """Elige el motor de compresión y, si aplica, el binario de Ghostscript."""
+    gs = buscar_gs(gs_explicito)
+
+    if pedido == "ghostscript":
+        if not gs:
+            sys.exit("No se encontró Ghostscript.\n\n" + AYUDA_GS)
+        return "ghostscript", gs
+
+    if pedido == "pymupdf":
+        if not hay_pymupdf():
+            sys.exit("Falta PyMuPDF y/o Pillow.\n\n" + AYUDA_PYMUPDF)
+        return "pymupdf", None
+
+    # auto: Ghostscript comprime algo mejor, así que tiene prioridad.
+    if gs:
+        return "ghostscript", gs
+    if hay_pymupdf():
+        return "pymupdf", None
 
     sys.exit(
-        "No se encontró Ghostscript en el PATH.\n"
-        "  Linux   : apt install ghostscript\n"
-        "  macOS   : brew install ghostscript\n"
-        "  Windows : https://ghostscript.com/releases/gsdnld.html\n"
-        "\n"
-        "Si no podés instalarlo, descargá la versión portable y pasale la ruta:\n"
-        "  python scripts/compress.py ORIGEN --muestra 20 --gs C:\\gs\\bin\\gswin64c.exe"
+        "No hay ningún motor de compresión disponible.\n"
+        "Instalá alguno de estos:\n\n" + AYUDA_GS + "\n" + AYUDA_PYMUPDF
     )
 
 
@@ -243,13 +351,17 @@ def main():
     ap.add_argument("--gs", metavar="RUTA",
                     help="ruta al ejecutable de Ghostscript, para instalaciones "
                          "portables que no están en el PATH")
+    ap.add_argument("--motor", choices=("auto", "ghostscript", "pymupdf"),
+                    default="auto",
+                    help="motor de compresión (default: el que esté disponible)")
     args = ap.parse_args()
 
     if not args.origen.is_dir():
         sys.exit(f"No existe el directorio {args.origen}")
 
-    global GS
-    GS = resolver_gs(args.gs)
+    global GS, MOTOR
+    MOTOR, GS = resolver_motor(args.motor, args.gs)
+    print(f"Motor: {MOTOR}\n")
 
     if args.muestra:
         estimar(args.origen, args.perfil, args.dpi, args.muestra)
