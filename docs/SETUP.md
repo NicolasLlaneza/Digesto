@@ -137,12 +137,14 @@ python scripts/index_docs.py ./comprimidos
 Deduce tipo, número y año del nombre del archivo. Corré primero el `--dry-run` para
 ver cuántos reconoce; los que no matcheen quedan listados al final.
 
-Conviene nombrar los archivos así:
+Reconoce la palabra completa y las abreviaturas habituales, con cualquier
+separador entre las partes:
 
 ```
-ordenanza-1234-2019.pdf
-decreto-045-2021.pdf
-resolucion-12-2020.pdf
+DEC-1127-2025.pdf        decreto_045_2021.pdf
+RESO-304-2025.pdf        ordenanza-1234-2019.pdf
+ORD 88 2024.pdf          resolución 12 2020.pdf
+DISP-7-2023.pdf          CONV-15-2021.pdf
 ```
 
 ## 5. Levantar la app

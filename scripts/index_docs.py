@@ -2,11 +2,12 @@
 """Inserta en Supabase la metadata de los documentos ya subidos a R2.
 
 Deduce tipo, número y año del nombre del archivo, así que conviene nombrarlos
-de forma consistente. Los patrones reconocidos son, por ejemplo:
+de forma consistente. Reconoce tanto la palabra completa como las abreviaturas
+habituales, con cualquier separador entre las partes:
 
-    ordenanza-1234-2019.pdf
-    decreto_045_2021.pdf
-    resolucion 12 2020.pdf
+    DEC-1127-2025.pdf          decreto_045_2021.pdf
+    RESO-304-2025.pdf          ordenanza-1234-2019.pdf
+    ORD 88 2024.pdf            resolución 12 2020.pdf
 
 Lo que no matchee se salta y queda listado al final para cargarlo a mano.
 
@@ -26,11 +27,34 @@ from pypdf import PdfReader
 
 load_dotenv()
 
-TIPOS = ("ordenanza", "decreto", "resolucion", "disposicion", "acta", "convenio")
+# Cada tipo con las formas en que aparece en los nombres de archivo. En la
+# práctica se abrevia más de lo que se escribe completo: DEC-1127-2025.pdf,
+# RESO-304-2025.pdf.
+TIPOS = {
+    "ordenanza":   ("ordenanza", "orden", "ord"),
+    "decreto":     ("decreto", "decr", "dec"),
+    "resolucion":  ("resolucion", "resol", "reso", "res"),
+    "disposicion": ("disposicion", "dispo", "disp"),
+    "acta":        ("acta",),
+    "convenio":    ("convenio", "conv"),
+}
 
-# tipo - numero - año, con cualquier separador no alfanumérico entre medio.
+# alias -> tipo canónico
+ALIAS = {a: canon for canon, alias in TIPOS.items() for a in alias}
+
+# Alternativas de más larga a más corta: si no, "res" ganaría antes de que
+# "resolucion" llegue a probarse, y el número quedaría mal recortado.
+_ALTERNATIVAS = "|".join(sorted(ALIAS, key=len, reverse=True))
+
+# tipo - numero - año, con cualquier separador entre medio. El guión bajo entra
+# explícito porque \W no lo incluye: para regex es un carácter de palabra.
+SEP = r"[\W_]+"
+
+# El tipo debe arrancar el nombre o venir precedido de un separador, para que
+# "ACTA" no matchee dentro de una palabra.
 PATRON = re.compile(
-    rf"(?P<tipo>{'|'.join(TIPOS)})\W+(?P<numero>\d+)\W+(?P<anio>(?:19|20)\d{{2}})",
+    rf"(?:^|{SEP})(?P<tipo>{_ALTERNATIVAS}){SEP}"
+    rf"(?P<numero>\d+){SEP}(?P<anio>(?:19|20)\d{{2}})",
     re.IGNORECASE,
 )
 
@@ -46,7 +70,7 @@ def parsear(nombre: str):
     if not m:
         return None
     return {
-        "tipo": m.group("tipo"),
+        "tipo": ALIAS[m.group("tipo")],
         "numero": m.group("numero").lstrip("0") or "0",
         "anio": int(m.group("anio")),
     }
