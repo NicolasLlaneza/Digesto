@@ -405,6 +405,9 @@ def main():
                     help="año de las normas (por defecto se toma del nombre)")
     ap.add_argument("-o", "--salida", type=Path,
                     help="CSV de salida (por defecto, junto a la planilla)")
+    ap.add_argument("--por-anio", action="store_true",
+                    help="un CSV por año en vez de uno solo, para poder "
+                         "reimportar un año sin tocar los demás")
     args = ap.parse_args()
 
     todas, avisos = [], []
@@ -417,13 +420,27 @@ def main():
     if not todas:
         sys.exit("\nNo se leyó ninguna fila.")
 
-    salida = args.salida or args.planillas[0].with_suffix(".csv")
-    with open(salida, "w", newline="", encoding="utf-8") as f:
-        escritor = csv.DictWriter(f, fieldnames=CAMPOS)
-        escritor.writeheader()
-        escritor.writerows(todas)
+    def escribir(ruta, filas):
+        with open(ruta, "w", newline="", encoding="utf-8") as f:
+            escritor = csv.DictWriter(f, fieldnames=CAMPOS)
+            escritor.writeheader()
+            escritor.writerows(filas)
+        return ruta.stat().st_size
 
-    print(f"\n  {len(todas)} normas -> {salida}")
+    base = args.salida or args.planillas[0].with_suffix(".csv")
+
+    if args.por_anio:
+        print()
+        for anio in sorted({f["anio"] for f in todas}):
+            del_anio = [f for f in todas if f["anio"] == anio]
+            ruta = base.with_name(f"{base.stem}-{anio}{base.suffix or '.csv'}")
+            tam = escribir(ruta, del_anio)
+            print(f"  {anio}: {len(del_anio):>6} normas  "
+                  f"{tam / 1024 / 1024:5.1f} MB  -> {ruta.name}")
+        print(f"\n  {len(todas)} normas en total")
+    else:
+        tam = escribir(base, todas)
+        print(f"\n  {len(todas)} normas ({tam / 1024 / 1024:.1f} MB) -> {base}")
 
     sin_fecha = sum(1 for f in todas if not f["fecha"])
     sin_exp = sum(1 for f in todas if not f["exp_numero"])
