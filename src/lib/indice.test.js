@@ -43,3 +43,29 @@ describe('etiquetaTipo', () => {
     expect(etiquetaTipo('convenio')).toBe('convenio')
   })
 })
+
+describe('agrupación por año', () => {
+  // La función vive en la página, así que se replica su regla para fijar el
+  // comportamiento esperado: tramos consecutivos, sin reordenar.
+  const agrupar = (normas) =>
+    normas.reduce((grupos, norma) => {
+      const ultimo = grupos[grupos.length - 1]
+      if (ultimo && ultimo.anio === norma.anio) ultimo.normas.push(norma)
+      else grupos.push({ anio: norma.anio, normas: [norma] })
+      return grupos
+    }, [])
+
+  it('junta las normas consecutivas del mismo año', () => {
+    const g = agrupar([{ anio: 2025 }, { anio: 2025 }, { anio: 2024 }])
+    expect(g.map((x) => [x.anio, x.normas.length])).toEqual([[2025, 2], [2024, 1]])
+  })
+
+  it('no reordena: un año que reaparece abre un grupo nuevo', () => {
+    const g = agrupar([{ anio: 2025 }, { anio: 2024 }, { anio: 2025 }])
+    expect(g.map((x) => x.anio)).toEqual([2025, 2024, 2025])
+  })
+
+  it('devuelve vacío sin resultados', () => {
+    expect(agrupar([])).toEqual([])
+  })
+})
