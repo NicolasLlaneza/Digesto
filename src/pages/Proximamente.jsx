@@ -17,11 +17,12 @@ export default function Proximamente() {
         poder buscar ordenanzas, decretos y resoluciones desde acá.
       </p>
 
-      {/* El digesto sigue disponible para quien tenga cuenta: la portada lo
-          oculta del público, no lo da de baja. */}
+      {/* La portada solo esconde el contenido del público. Quien tenga cuenta
+          entra por acá; sin sesión, este enlace lleva al login. */}
       <Link
         to="/buscador"
-        className="mt-10 text-xs text-boletin-600/70 hover:text-boletin-600 hover:underline"
+        className="mt-10 rounded-md border border-boletin-100 bg-white px-4 py-2
+                   text-sm text-boletin-600 hover:bg-boletin-50"
       >
         Acceso interno
       </Link>
