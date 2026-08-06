@@ -22,6 +22,7 @@ tiene arreglo y se informa lo que no.
 
 import argparse
 import csv
+import json
 import re
 import sys
 import unicodedata
@@ -52,7 +53,7 @@ TIPOS_EXPEDIENTE = {
 FORMATOS_FECHA = ("%d/%m/%Y %H:%M", "%d/%m/%Y %H:%M:%S", "%d/%m/%Y")
 
 CAMPOS = ["tipo", "numero", "anio", "fecha", "indice",
-          "exp_tipo", "exp_numero", "exp_anio"]
+          "exp_tipo", "exp_numero", "exp_anio", "origen"]
 
 
 def normalizar(texto: str) -> str:
@@ -85,17 +86,35 @@ def entero(valor):
 
 
 def parsear_fecha(valor):
+    """Interpreta la fecha tolerando los errores de tipeo de la planilla.
+
+    Aparecen cosas como '12 :15:28' —espacio antes de los dos puntos— y
+    '16/092025', a la que le falta una barra. Son inequívocas, así que se
+    corrigen; lo que no se pueda interpretar queda en blanco y el texto
+    original se conserva en `origen`.
+    """
     if valor is None:
         return None
     if isinstance(valor, datetime):
         return valor.isoformat()
 
-    texto = str(valor).strip()
-    for formato in FORMATOS_FECHA:
-        try:
-            return datetime.strptime(texto, formato).isoformat()
-        except ValueError:
-            continue
+    texto = re.sub(r"\s*:\s*", ":", str(valor).strip())
+    texto = re.sub(r"\s+", " ", texto)
+
+    candidatos = [texto]
+
+    # DD/MMYYYY: falta la barra entre mes y año.
+    faltante = re.match(r"^(\d{1,2})/(\d{2})(\d{4})\b(.*)$", texto)
+    if faltante:
+        d, m, a, resto = faltante.groups()
+        candidatos.append(f"{d}/{m}/{a}{resto}")
+
+    for candidato in candidatos:
+        for formato in FORMATOS_FECHA:
+            try:
+                return datetime.strptime(candidato, formato).isoformat()
+            except ValueError:
+                continue
     return None
 
 
@@ -111,10 +130,12 @@ def tipo_expediente(valor):
 
 
 def anio_expediente(valor, anio_norma: int):
-    """Descarta años imposibles en vez de guardar basura.
+    """Normaliza el año del expediente para poder filtrar por él.
 
-    Un expediente no puede ser posterior a la norma que lo resuelve, y en los
-    datos aparecen valores como 202, 25 o 7735.
+    Un expediente no puede ser posterior a la norma que lo resuelve, así que
+    ese es el techo. Lo que no entra en un año plausible se deja en blanco
+    acá, pero el valor original se conserva en la columna `origen`: no se
+    descarta, solo no se lo usa para filtrar.
     """
     n = entero(valor)
     if n is None:
@@ -129,6 +150,15 @@ def anio_expediente(valor, anio_norma: int):
     return None
 
 
+def crudo(valor) -> str:
+    """El valor tal como vino de la celda, sin interpretar."""
+    if valor is None:
+        return ""
+    if isinstance(valor, datetime):
+        return valor.isoformat()
+    return str(valor).strip()
+
+
 def leer_hoja(ws, tipo: str, anio: int, avisos: list):
     filas = []
 
@@ -141,10 +171,38 @@ def leer_hoja(ws, tipo: str, anio: int, avisos: list):
         n = entero(numero)
         texto = limpiar_texto(indice)
 
-        if n is None:
-            avisos.append(f"{ws.title} fila {i}: sin número de norma, se omite")
-            continue
+        # Cada celda se interpreta por su cuenta. Antes, un tipo de expediente
+        # numérico se tomaba como señal de fila corrida y se descartaba también
+        # el número, que muchas veces era válido: la heurística borraba datos
+        # buenos. Lo que no se pueda interpretar queda en blanco acá y entero
+        # en `origen`.
+        normalizado = {
+            "numero": n,
+            "fecha": parsear_fecha(fecha),
+            "exp_tipo": tipo_expediente(exp_t),
+            "exp_numero": entero(exp_n),
+            "exp_anio": anio_expediente(exp_a, anio),
+        }
+        original = {
+            "numero": crudo(numero),
+            "fecha": crudo(fecha),
+            "exp_tipo": crudo(exp_t),
+            "exp_numero": crudo(exp_n),
+            "exp_anio": crudo(exp_a),
+            "hoja": ws.title,
+            "fila": i,
+        }
 
+        # Se deja anotado qué campos la normalización no pudo interpretar, para
+        # poder listarlos sin volver a comparar contra la planilla.
+        original["sin_normalizar"] = sorted(
+            campo for campo, valor in normalizado.items()
+            if valor is None and original[campo]
+        )
+
+        if n is None:
+            avisos.append(f"{ws.title} fila {i}: número '{original['numero']}' "
+                          f"no interpretable, se guarda igual")
         # Sin índice se guarda igual: la norma existe y tiene que aparecer al
         # buscarla por número, aunque no se la pueda encontrar por contenido.
         if not texto:
@@ -152,13 +210,14 @@ def leer_hoja(ws, tipo: str, anio: int, avisos: list):
 
         filas.append({
             "tipo": tipo,
-            "numero": n,
+            "numero": "" if n is None else n,
             "anio": anio,
-            "fecha": parsear_fecha(fecha) or "",
+            "fecha": normalizado["fecha"] or "",
             "indice": texto,
-            "exp_tipo": tipo_expediente(exp_t) or "",
-            "exp_numero": entero(exp_n) if not isinstance(exp_t, int) else "",
-            "exp_anio": anio_expediente(exp_a, anio) or "",
+            "exp_tipo": normalizado["exp_tipo"] or "",
+            "exp_numero": "" if normalizado["exp_numero"] is None else normalizado["exp_numero"],
+            "exp_anio": "" if normalizado["exp_anio"] is None else normalizado["exp_anio"],
+            "origen": json.dumps(original, ensure_ascii=False),
         })
 
     return filas
@@ -205,12 +264,16 @@ def main():
 
     print(f"\n  {len(todas)} normas -> {salida}")
 
-    sin_fecha = sum(1 for f in todas if not f["fecha"])
-    sin_exp = sum(1 for f in todas if not f["exp_numero"])
-    if sin_fecha:
-        print(f"  {sin_fecha} sin fecha reconocible")
-    if sin_exp:
-        print(f"  {sin_exp} sin expediente")
+    pendientes = [f for f in todas if json.loads(f["origen"])["sin_normalizar"]]
+    if pendientes:
+        print(f"\n  {len(pendientes)} filas con algún campo sin normalizar.")
+        print("  Se guardan igual; el valor original queda en la columna `origen`.")
+        for f in pendientes[:10]:
+            o = json.loads(f["origen"])
+            detalle = ", ".join(f"{c}={o[c]!r}" for c in o["sin_normalizar"])
+            print(f"    {f['tipo']} {f['numero']}/{f['anio']}: {detalle}")
+        if len(pendientes) > 10:
+            print(f"    ... y {len(pendientes) - 10} más")
 
     if avisos:
         print(f"\n  {len(avisos)} avisos:")
