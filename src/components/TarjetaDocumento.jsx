@@ -27,7 +27,7 @@ export default function TarjetaDocumento({ doc }) {
       <FileText size={20} aria-hidden="true" className="mt-1 shrink-0 text-boletin-600" />
 
       <div className="min-w-0 flex-1">
-        <Link to={`/documento/${doc.id}`} className="font-medium hover:underline break-words">
+        <Link to={`/digesto/documento/${doc.id}`} className="font-medium hover:underline break-words">
           {doc.titulo}
         </Link>
 

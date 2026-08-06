@@ -52,7 +52,7 @@ export default function DocumentoDetalle() {
   return (
     <article>
       <Link
-        to="/"
+        to="/digesto"
         className="inline-flex items-center gap-1 text-sm text-boletin-600 hover:underline"
       >
         <ArrowLeft size={16} aria-hidden="true" /> Volver al listado
