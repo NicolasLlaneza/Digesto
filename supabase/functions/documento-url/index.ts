@@ -14,29 +14,68 @@ import { AwsClient } from "https://esm.sh/aws4fetch@1.0.20";
 // filtrado deje de servir enseguida.
 const VALIDEZ_SEGUNDOS = 300;
 
-const cors = {
-  "Access-Control-Allow-Origin": Deno.env.get("ORIGEN_PERMITIDO") ?? "*",
-  // apikey y x-client-info los agrega el cliente de Supabase por su cuenta,
-  // así que tienen que estar permitidos aunque este código no los use.
-  "Access-Control-Allow-Headers":
-    "authorization, content-type, apikey, x-client-info",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Max-Age": "3600",
-};
+// ORIGEN_PERMITIDO admite varios orígenes separados por coma, para que
+// desarrollo y producción convivan sin tener que editar el secret.
+//
+// Se normaliza cada uno a su origen: el navegador compara el header contra el
+// origen del documento carácter por carácter, así que una barra final de más
+// —o una ruta pegada— rompe el CORS con un mensaje que no deja claro que el
+// problema es un solo carácter.
+function permitidos(): string[] {
+  return (Deno.env.get("ORIGEN_PERMITIDO") ?? "")
+    .split(",")
+    .map((o) => o.trim())
+    .filter(Boolean)
+    .map((o) => {
+      try {
+        return new URL(o).origin;
+      } catch {
+        return o.replace(/\/+$/, "");
+      }
+    });
+}
 
-function json(body: unknown, status = 200) {
+function cabecerasCors(req: Request) {
+  const lista = permitidos();
+  const origen = req.headers.get("Origin");
+
+  // Se devuelve el origen que pidió, si está autorizado. Con varios orígenes
+  // configurados no se puede mandar la lista entera: el header admite uno solo.
+  const permitido = lista.length === 0
+    ? "*"
+    : (origen && lista.includes(origen) ? origen : lista[0]);
+
+  return {
+    "Access-Control-Allow-Origin": permitido,
+    // apikey y x-client-info los agrega el cliente de Supabase por su cuenta,
+    // así que tienen que estar permitidos aunque este código no los use.
+    "Access-Control-Allow-Headers":
+      "authorization, content-type, apikey, x-client-info",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Max-Age": "3600",
+    // El header depende del Origin entrante, así que las caches no deben
+    // reutilizar una respuesta entre orígenes distintos.
+    "Vary": "Origin",
+  };
+}
+
+function json(body: unknown, status: number, req: Request) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { ...cors, "Content-Type": "application/json" },
+    headers: { ...cabecerasCors(req), "Content-Type": "application/json" },
   });
 }
 
 Deno.serve(async (req) => {
-  if (req.method === "OPTIONS") return new Response(null, { headers: cors });
-  if (req.method !== "POST") return json({ error: "Método no permitido" }, 405);
+  if (req.method === "OPTIONS") {
+    return new Response(null, { headers: cabecerasCors(req) });
+  }
+  if (req.method !== "POST") {
+    return json({ error: "Método no permitido" }, 405, req);
+  }
 
   const token = req.headers.get("Authorization")?.replace(/^Bearer\s+/i, "");
-  if (!token) return json({ error: "Falta la sesión" }, 401);
+  if (!token) return json({ error: "Falta la sesión" }, 401, req);
 
   // El cliente se crea con la anon key y el token del usuario, así que
   // getUser() valida la firma del JWT contra el proyecto.
@@ -47,16 +86,16 @@ Deno.serve(async (req) => {
   );
 
   const { data: { user }, error: errorAuth } = await supabase.auth.getUser();
-  if (errorAuth || !user) return json({ error: "Sesión inválida" }, 401);
+  if (errorAuth || !user) return json({ error: "Sesión inválida" }, 401, req);
 
   let id: unknown;
   try {
     ({ id } = await req.json());
   } catch {
-    return json({ error: "Cuerpo inválido" }, 400);
+    return json({ error: "Cuerpo inválido" }, 400, req);
   }
   if (typeof id !== "number" && typeof id !== "string") {
-    return json({ error: "Falta el id del documento" }, 400);
+    return json({ error: "Falta el id del documento" }, 400, req);
   }
 
   // Se busca la key en la tabla en vez de aceptarla del cliente: si no, el
@@ -67,7 +106,7 @@ Deno.serve(async (req) => {
     .eq("id", id)
     .single();
 
-  if (errorDoc || !doc) return json({ error: "Documento no encontrado" }, 404);
+  if (errorDoc || !doc) return json({ error: "Documento no encontrado" }, 404, req);
 
   const cuenta = Deno.env.get("R2_ACCOUNT_ID")!;
   const bucket = Deno.env.get("R2_BUCKET")!;
@@ -94,5 +133,5 @@ Deno.serve(async (req) => {
     url: firmada.url,
     titulo: doc.titulo,
     expira_en: VALIDEZ_SEGUNDOS,
-  });
+  }, 200, req);
 });
