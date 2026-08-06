@@ -1,4 +1,4 @@
-import { Routes, Route, Link, NavLink } from 'react-router-dom'
+import { Routes, Route, Navigate, Link, NavLink } from 'react-router-dom'
 import { Scale, LogOut, Search, FileText } from 'lucide-react'
 import { useAuth } from './lib/auth'
 import RutaProtegida from './components/RutaProtegida'
@@ -7,9 +7,20 @@ import Indice from './pages/Indice'
 import Home from './pages/Home'
 import DocumentoDetalle from './pages/DocumentoDetalle'
 
+// La consulta de documentos queda fuera de servicio hasta que se cargue el
+// acervo completo: hoy solo hay dos PDFs de prueba. No alcanza con esconder
+// el enlace, porque la URL seguiría funcionando para quien la conozca, así
+// que con esto en false la ruta directamente no existe.
+//
+// Para reactivarla alcanza con ponerlo en true: el código de la sección se
+// conserva entero.
+const DOCUMENTOS_HABILITADO = false
+
 const SECCIONES = [
   { a: '/buscador', icono: Search, texto: 'Índice de normas' },
-  { a: '/digesto', icono: FileText, texto: 'Documentos' },
+  ...(DOCUMENTOS_HABILITADO
+    ? [{ a: '/digesto', icono: FileText, texto: 'Documentos' }]
+    : []),
 ]
 
 function Cabecera() {
@@ -80,12 +91,19 @@ export default function App() {
       {/* Buscador del índice: es el foco actual del proyecto. */}
       <Route path="/buscador" element={<Privado><Indice /></Privado>} />
 
-      {/* Consulta de documentos: funciona, pero todavía sin carga masiva. */}
-      <Route path="/digesto" element={<Privado><Home /></Privado>} />
-      <Route
-        path="/digesto/documento/:id"
-        element={<Privado><DocumentoDetalle /></Privado>}
-      />
+      {DOCUMENTOS_HABILITADO && (
+        <>
+          <Route path="/digesto" element={<Privado><Home /></Privado>} />
+          <Route
+            path="/digesto/documento/:id"
+            element={<Privado><DocumentoDetalle /></Privado>}
+          />
+        </>
+      )}
+
+      {/* Cualquier otra dirección vuelve a la portada, para que una ruta
+          desactivada no deje una pantalla en blanco. */}
+      <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   )
 }
