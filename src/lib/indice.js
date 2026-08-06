@@ -2,42 +2,42 @@ import { supabase } from './supabase'
 
 export const POR_PAGINA = 25
 
-const CAMPOS = 'id, tipo, numero, anio, fecha, indice, exp_tipo, exp_numero, exp_anio'
+// Marcas con que la base envuelve los términos que coincidieron. Se eligen
+// caracteres que no aparecen en el texto de las normas, para poder partir
+// por ellos sin riesgo de cortar donde no corresponde.
+export const MARCA_INICIO = '«'
+export const MARCA_FIN = '»'
 
 /**
  * Busca en el índice de normas.
  *
- * Los criterios son independientes y se combinan: por número de norma, por
- * número de expediente, o por lo que dice el índice. Sin año seleccionado
- * busca en todos los cargados, que es el caso habitual —quien busca un
- * expediente rara vez sabe de qué año salió la norma que lo resolvió.
+ * Va contra una función de la base en lugar de armar la consulta acá: así el
+ * orden por relevancia, el resaltado de coincidencias y el total vienen en
+ * una sola ida, y el conteo se resuelve del modo más barato según los
+ * filtros aplicados.
+ *
+ * El total llega solo al pedir la primera página, porque no cambia mientras
+ * se pagina; quien llama lo conserva.
  */
 export async function buscarNormas({
   numero, expediente, texto, tipo, anio, pagina = 0,
 }) {
-  let q = supabase.from('indice_normas').select(CAMPOS, { count: 'exact' })
-
-  if (numero?.trim()) q = q.eq('numero', Number(numero.trim()))
-  if (expediente?.trim()) q = q.eq('exp_numero', Number(expediente.trim()))
-
-  if (texto?.trim()) {
-    q = q.textSearch('busqueda', texto.trim(), {
-      type: 'websearch',
-      config: 'spanish',
-    })
-  }
-
-  if (tipo) q = q.eq('tipo', tipo)
-  if (anio) q = q.eq('anio', Number(anio))
-
-  const desde = pagina * POR_PAGINA
-  const { data, error, count } = await q
-    .order('anio', { ascending: false })
-    .order('numero', { ascending: false })
-    .range(desde, desde + POR_PAGINA - 1)
+  const { data, error } = await supabase.rpc('buscar_indice', {
+    q: texto?.trim() || null,
+    p_numero: numero?.trim() ? Number(numero.trim()) : null,
+    p_expediente: expediente?.trim() ? Number(expediente.trim()) : null,
+    p_tipo: tipo || null,
+    p_anio: anio ? Number(anio) : null,
+    p_limite: POR_PAGINA,
+    p_offset: pagina * POR_PAGINA,
+  })
 
   if (error) throw error
-  return { normas: data ?? [], total: count ?? 0 }
+
+  return {
+    normas: data ?? [],
+    total: data?.[0]?.total ?? null,
+  }
 }
 
 export async function obtenerFacetasIndice() {
@@ -69,4 +69,28 @@ export function formatearFecha(iso) {
   return new Date(iso).toLocaleDateString('es-AR', {
     day: '2-digit', month: '2-digit', year: 'numeric',
   })
+}
+
+/**
+ * Parte el texto resaltado en tramos, marcando cuáles coincidieron.
+ *
+ * Se devuelven tramos en vez de HTML para poder pintarlos con elementos de
+ * React: insertar el texto de la base como HTML permitiría que el contenido
+ * de una norma inyectara marcado en la página.
+ */
+export function tramosResaltados(texto) {
+  if (!texto) return []
+
+  return texto
+    .split(new RegExp(`(${MARCA_INICIO}[^${MARCA_FIN}]*${MARCA_FIN})`, 'g'))
+    .filter(Boolean)
+    .map((tramo, i) => {
+      const coincide =
+        tramo.startsWith(MARCA_INICIO) && tramo.endsWith(MARCA_FIN)
+      return {
+        clave: i,
+        coincide,
+        texto: coincide ? tramo.slice(1, -1) : tramo,
+      }
+    })
 }

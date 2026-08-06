@@ -27,7 +27,13 @@ export default function Indice() {
       setCargando(true)
       setError(null)
       try {
-        setResultado(await buscarNormas(filtros))
+        const nuevo = await buscarNormas(filtros)
+        // El total llega solo en la primera página. Al paginar se conserva
+        // el anterior, porque cambiar de página no cambia cuántos hay.
+        setResultado((previo) => ({
+          normas: nuevo.normas,
+          total: nuevo.total ?? previo.total,
+        }))
       } catch (e) {
         setError(e.message)
       } finally {
