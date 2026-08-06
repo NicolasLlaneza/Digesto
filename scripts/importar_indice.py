@@ -1,23 +1,25 @@
 #!/usr/bin/env python3
 """Convierte las planillas de índice a un CSV listo para importar.
 
-Las planillas vienen una por año, con una hoja por tipo de norma y un
-encabezado de dos niveles:
+Las planillas cambiaron de formato a lo largo de los años, así que en vez de
+asumir posiciones fijas se detecta el encabezado y se mapean las columnas por
+su nombre. Dos familias conocidas:
 
-    fila 1:  DECRETO           |  EXPEDIENTE
-    fila 2:  NUMERO INDICE FECHA |  TIPO NUMERO AÑO
-    fila 3+: datos
+  2009-2013 (.xls)   Dcto. Nº | FECHA | CONCEPTO | [MONTO] | EXPTE. Nº | [ORIGEN]
+                     La fecha es un número de serie de Excel y el expediente
+                     viene entero en un campo: "17701-DEV-12".
 
-La salida es un CSV que se importa desde el panel de Supabase
-(Table Editor -> indice_normas -> Import data from CSV), sin necesidad de
-tener credenciales ni de instalar nada más.
+  2025 (.xlsx)       Encabezado de dos niveles, con el expediente repartido
+                     en TIPO / NUMERO / AÑO y la fecha como texto.
 
-    python scripts/importar_indice.py "DGSTO. MPAL. 2.025.xlsx"
+Nada se descarta: cada fila guarda en `origen` todas las celdas tal como
+vinieron, indexadas por el nombre de su columna, junto con la hoja y la fila
+de procedencia. Las columnas normalizadas son una vista derivada para poder
+buscar y filtrar.
+
+    python scripts/importar_indice.py "DGSTO. MPAL. 2.013.xls"
     python scripts/importar_indice.py planilla.xlsx --anio 2024 -o salida.csv
-
-Los datos de origen traen inconsistencias —tipos de expediente escritos de
-varias formas, años imposibles, filas corridas—, así que se normaliza lo que
-tiene arreglo y se informa lo que no.
+    python scripts/importar_indice.py *.xls -o todos.csv
 """
 
 import argparse
@@ -26,84 +28,115 @@ import json
 import re
 import sys
 import unicodedata
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
-
-import openpyxl
-
-# Nombre de hoja -> tipo de norma. Se compara normalizado.
-TIPOS_HOJA = {
-    "decretos": "decreto",
-    "resoluciones": "resolucion",
-    "ordenanzas": "ordenanza",
-    "disposiciones": "disposicion",
-}
-
-# Formas en que aparece escrito el tipo de expediente en las planillas.
-TIPOS_EXPEDIENTE = {
-    "ee": "EE",
-    "aee": "EE",
-    "ne": "NE",
-    "nee": "NEE",
-    "exp": "EXP",
-    "esp": "EXP",     # error de tipeo frecuente
-    "expediente": "EXP",
-}
-
-FORMATOS_FECHA = ("%d/%m/%Y %H:%M", "%d/%m/%Y %H:%M:%S", "%d/%m/%Y")
 
 CAMPOS = ["tipo", "numero", "anio", "fecha", "indice",
           "exp_tipo", "exp_numero", "exp_anio", "origen"]
 
+# Palabras del nombre de la hoja que identifican el tipo de norma. Se prueban
+# de más específica a más general: "resolucion personal" antes que
+# "resolucion", que si no se la comería.
+TIPOS_HOJA = (
+    ("resolucion personal", "resolucion_personal"),
+    ("resoluciones", "resolucion"),
+    ("resolucion", "resolucion"),
+    ("decretos", "decreto"),
+    ("decreto", "decreto"),
+    ("ordenanzas", "ordenanza"),
+    ("ordenanza", "ordenanza"),
+    ("disposiciones", "disposicion"),
+    ("disposicion", "disposicion"),
+)
 
-def normalizar(texto: str) -> str:
+# Nombre de columna normalizado -> campo. La clave se busca como subcadena,
+# así que "dcto n" cubre "Dcto. Nº" y "Dcto. Nº " con espacio al final.
+COLUMNAS = (
+    ("expediente tipo", "exp_tipo"),
+    ("expediente numero", "exp_numero"),
+    ("expediente ano", "exp_anio"),
+    ("expediente", "expediente"),   # el campo entero, formato viejo
+    ("expte", "expediente"),
+    ("dcto n", "numero"),
+    ("resol n", "numero"),
+    ("numero", "numero"),
+    ("fecha", "fecha"),
+    ("concepto", "indice"),
+    ("indice", "indice"),
+    ("tramite", "tramite"),
+    ("monto", "monto"),
+    ("origen", "origen_norma"),
+)
+
+# Expediente del formato viejo: número, iniciales de la repartición, y año de
+# dos o cuatro dígitos. Ej: 17701-DEV-12, 505895-M-06, 7462-L-1964.
+EXPEDIENTE_VIEJO = re.compile(r"(\d+)\s*-\s*([A-Za-zÁÉÍÓÚÑ.]+)\s*-\s*(\d{2,4})")
+
+# Marcas de que no hay expediente.
+SIN_EXPEDIENTE = ("s/expte", "sexpte", "sinexpte", "snexpte")
+
+FORMATOS_FECHA = ("%d/%m/%Y %H:%M", "%d/%m/%Y %H:%M:%S", "%d/%m/%Y")
+
+# Origen del calendario de Excel. El de 1900 arrastra el bug del año bisiesto
+# inexistente, que se compensa restando dos días.
+EPOCA_EXCEL = datetime(1899, 12, 30)
+
+
+def normalizar(texto) -> str:
     sin_tildes = unicodedata.normalize("NFKD", str(texto))
-    return "".join(c for c in sin_tildes if not unicodedata.combining(c)).strip().lower()
+    limpio = "".join(c for c in sin_tildes if not unicodedata.combining(c))
+    return re.sub(r"[^a-z0-9]+", " ", limpio.lower()).strip()
 
 
-def anio_del_nombre(nombre: str) -> int | None:
-    """Saca el año del nombre del archivo.
-
-    Vienen escritos como "2.025" con separador de miles, así que se quitan los
-    puntos antes de buscar.
-    """
-    m = re.search(r"(?:19|20)\d{2}", nombre.replace(".", ""))
-    return int(m.group()) if m else None
-
-
-def limpiar_texto(valor) -> str:
-    """Colapsa los saltos de línea que el Excel deja dentro de la celda."""
-    return re.sub(r"\s+", " ", str(valor)).strip() if valor is not None else ""
+def crudo(valor) -> str:
+    """El valor tal como vino de la celda, sin interpretar."""
+    if valor is None:
+        return ""
+    if isinstance(valor, datetime):
+        return valor.isoformat()
+    if isinstance(valor, float) and valor.is_integer():
+        return str(int(valor))
+    return str(valor).strip()
 
 
 def entero(valor):
-    if valor is None:
+    if valor is None or valor == "":
         return None
-    if isinstance(valor, int):
-        return valor
+    if isinstance(valor, bool):
+        return None
+    if isinstance(valor, (int, float)):
+        return int(valor)
     m = re.search(r"\d+", str(valor).replace(".", ""))
     return int(m.group()) if m else None
 
 
-def parsear_fecha(valor):
-    """Interpreta la fecha tolerando los errores de tipeo de la planilla.
+def anio_completo(dos_digitos: int, tope: int) -> int:
+    """Expande un año de dos dígitos sin inventar fechas futuras."""
+    siglo_21 = 2000 + dos_digitos
+    return siglo_21 if siglo_21 <= tope else 1900 + dos_digitos
 
-    Aparecen cosas como '12 :15:28' —espacio antes de los dos puntos— y
-    '16/092025', a la que le falta una barra. Son inequívocas, así que se
-    corrigen; lo que no se pueda interpretar queda en blanco y el texto
-    original se conserva en `origen`.
+
+def parsear_fecha(valor, anio_norma: int):
+    """Interpreta la fecha en cualquiera de las formas en que aparece.
+
+    Tolera dos errores de tipeo inequívocos del formato nuevo: el espacio
+    antes de los dos puntos ('12 :15:28') y la barra faltante ('16/092025').
     """
-    if valor is None:
+    if valor is None or valor == "":
         return None
     if isinstance(valor, datetime):
         return valor.isoformat()
+
+    # Número de serie de Excel, usado en las planillas viejas.
+    if isinstance(valor, (int, float)) and not isinstance(valor, bool):
+        if 1 <= valor <= 100_000:
+            return (EPOCA_EXCEL + timedelta(days=float(valor))).isoformat()
+        return None
 
     texto = re.sub(r"\s*:\s*", ":", str(valor).strip())
     texto = re.sub(r"\s+", " ", texto)
 
     candidatos = [texto]
-
-    # DD/MMYYYY: falta la barra entre mes y año.
     faltante = re.match(r"^(\d{1,2})/(\d{2})(\d{4})\b(.*)$", texto)
     if faltante:
         d, m, a, resto = faltante.groups()
@@ -118,145 +151,273 @@ def parsear_fecha(valor):
     return None
 
 
-def tipo_expediente(valor):
-    if valor is None:
-        return None
-    # Un número acá significa fila corrida: la columna no contiene un tipo.
-    if isinstance(valor, int):
-        return None
+def parsear_expediente(texto: str, anio_norma: int):
+    """Separa el expediente del formato viejo en sus tres partes.
 
-    limpio = re.sub(r"[^a-z]", "", normalizar(valor))
-    return TIPOS_EXPEDIENTE.get(limpio) or (limpio.upper() or None)
-
-
-def anio_expediente(valor, anio_norma: int):
-    """Normaliza el año del expediente para poder filtrar por él.
-
-    Un expediente no puede ser posterior a la norma que lo resuelve, así que
-    ese es el techo. Lo que no entra en un año plausible se deja en blanco
-    acá, pero el valor original se conserva en la columna `origen`: no se
-    descarta, solo no se lo usa para filtrar.
+    Algunas celdas encadenan varios ('210334-M-90 y Ac. Nº 17591-M-08'); se
+    toma el primero, que es el principal. El texto completo queda en `origen`.
     """
-    n = entero(valor)
-    if n is None:
-        return None
-    if 1980 <= n <= anio_norma:
-        return n
-    # Año de dos dígitos, escrito como 25 en lugar de 2025.
-    if 0 <= n <= 99:
-        siglo = 2000 + n
-        if siglo <= anio_norma:
-            return siglo
+    if not texto:
+        return None, None, None
+
+    if normalizar(texto).replace(" ", "") in SIN_EXPEDIENTE:
+        return None, None, None
+
+    m = EXPEDIENTE_VIEJO.search(texto)
+    if not m:
+        return None, entero(texto), None
+
+    numero, iniciales, anio = m.groups()
+    a = int(anio)
+    if len(anio) <= 2:
+        a = anio_completo(a, anio_norma)
+
+    return iniciales.strip(".").upper() or None, int(numero), a
+
+
+def tipo_de_hoja(nombre: str):
+    n = normalizar(nombre)
+    for clave, tipo in TIPOS_HOJA:
+        if clave in n:
+            return tipo
     return None
 
 
-def crudo(valor) -> str:
-    """El valor tal como vino de la celda, sin interpretar."""
-    if valor is None:
-        return ""
-    if isinstance(valor, datetime):
-        return valor.isoformat()
-    return str(valor).strip()
+def anio_del_nombre(nombre: str):
+    """Los años vienen escritos como '2.013', así que se quitan los puntos."""
+    m = re.search(r"(?:19|20)\d{2}", str(nombre).replace(".", ""))
+    return int(m.group()) if m else None
 
 
-def leer_hoja(ws, tipo: str, anio: int, avisos: list):
-    filas = []
+# --- lectura de planillas -------------------------------------------------
 
-    for i, fila in enumerate(ws.iter_rows(min_row=3, values_only=True), start=3):
-        numero, indice, fecha, exp_t, exp_n, exp_a = (list(fila) + [None] * 6)[:6]
+def filas_de_planilla(ruta: Path):
+    """Devuelve (nombre_hoja, filas) para cada hoja, sea .xls o .xlsx."""
+    if ruta.suffix.lower() == ".xls":
+        import xlrd
+        wb = xlrd.open_workbook(str(ruta))
+        for hoja in wb.sheet_names():
+            ws = wb.sheet_by_name(hoja)
+            yield hoja, [
+                [ws.cell_value(r, c) for c in range(ws.ncols)]
+                for r in range(ws.nrows)
+            ]
+    else:
+        import openpyxl
+        wb = openpyxl.load_workbook(ruta, read_only=True, data_only=True)
+        for hoja in wb.sheetnames:
+            yield hoja, [list(f) for f in wb[hoja].iter_rows(values_only=True)]
 
-        if not any(c is not None and str(c).strip() for c in (numero, indice)):
+
+def ubicar_encabezado(filas, limite: int = 8):
+    """Encuentra la fila de encabezado y compone los nombres de columna.
+
+    La fila de encabezado es la primera que menciona una fecha, presente en
+    todos los formatos. Si la fila de arriba trae rótulos que agrupan
+    columnas —el caso del formato nuevo, con EXPEDIENTE abarcando tres— se
+    los antepone, porque sin eso las dos columnas llamadas NUMERO serían
+    indistinguibles.
+    """
+    for i, fila in enumerate(filas[:limite]):
+        nombres = [normalizar(c) if c is not None else "" for c in fila]
+        if not any(n == "fecha" for n in nombres):
             continue
 
-        n = entero(numero)
-        texto = limpiar_texto(indice)
+        if i > 0:
+            grupos, actual = [], ""
+            for celda in filas[i - 1]:
+                texto = normalizar(celda) if celda is not None else ""
+                # Los rótulos de grupo abarcan varias columnas y solo aparecen
+                # sobre la primera, así que se arrastran hacia la derecha.
+                if texto:
+                    actual = texto
+                grupos.append(actual)
 
-        # Cada celda se interpreta por su cuenta. Antes, un tipo de expediente
-        # numérico se tomaba como señal de fila corrida y se descartaba también
-        # el número, que muchas veces era válido: la heurística borraba datos
-        # buenos. Lo que no se pueda interpretar queda en blanco acá y entero
-        # en `origen`.
+            if any(g and g not in nombres for g in grupos):
+                nombres = [
+                    f"{g} {n}".strip() if g and n else n
+                    for g, n in zip(grupos + [""] * len(nombres), nombres)
+                ]
+
+        return i, nombres
+
+    return None, None
+
+
+def mapear_columnas(nombres):
+    """Nombre de columna -> campo, por coincidencia de subcadena."""
+    mapa = {}
+    for indice, nombre in enumerate(nombres):
+        if not nombre:
+            continue
+        for clave, campo in COLUMNAS:
+            if clave in nombre:
+                # La primera columna que reclama un campo se lo queda: los
+                # encabezados están ordenados de más específico a más general.
+                mapa.setdefault(campo, indice)
+                break
+    return mapa
+
+
+def leer_hoja(nombre_hoja, filas, tipo, anio, avisos):
+    fila_enc, nombres = ubicar_encabezado(filas)
+    if fila_enc is None:
+        avisos.append(f"Hoja '{nombre_hoja}': no se encontró el encabezado, se omite")
+        return []
+
+    mapa = mapear_columnas(nombres)
+
+    # La columna del texto no siempre se llama igual ni se llama: en las
+    # resoluciones de personal el asunto está bajo TRAMITE, y en los decretos
+    # de 2025 esa columna directamente no tiene encabezado.
+    if "indice" not in mapa:
+        if "tramite" in mapa:
+            mapa["indice"] = mapa.pop("tramite")
+        else:
+            usadas = set(mapa.values())
+            candidatas = [
+                i for i in range(len(nombres))
+                if i not in usadas and any(
+                    len(crudo(f[i])) > 20 for f in filas[fila_enc + 1:fila_enc + 40]
+                    if i < len(f)
+                )
+            ]
+            if candidatas:
+                mapa["indice"] = candidatas[0]
+                avisos.append(
+                    f"Hoja '{nombre_hoja}': la columna {candidatas[0] + 1} no tiene "
+                    f"encabezado y se toma como texto del índice"
+                )
+
+    for obligatorio in ("numero", "indice"):
+        if obligatorio not in mapa:
+            avisos.append(
+                f"Hoja '{nombre_hoja}': falta la columna de {obligatorio} "
+                f"(encabezado leído: {[n for n in nombres if n]}), se omite"
+            )
+            return []
+
+    def celda(fila, campo):
+        i = mapa.get(campo)
+        return fila[i] if i is not None and i < len(fila) else None
+
+    resultado = []
+
+    for numero_fila, fila in enumerate(filas[fila_enc + 1:], start=fila_enc + 2):
+        if not any(c is not None and str(c).strip() for c in fila):
+            continue
+
+        n = entero(celda(fila, "numero"))
+        indice = crudo(celda(fila, "indice"))
+        tramite = crudo(celda(fila, "tramite"))
+
+        # En las planillas viejas el asunto queda repartido entre CONCEPTO y
+        # TRÁMITE, y por separado ninguno se entiende: "Sr. Masotto Carlos" /
+        # "Rect. Art. 1º Resol. 707-12". Se unen para que la búsqueda por
+        # texto encuentre ambos.
+        texto = " — ".join(p for p in (indice, tramite) if p)
+
+        if n is None and not texto:
+            continue
+
+        # Todas las celdas, con el nombre de su columna, sin interpretar.
+        original = {
+            (nombres[i] or f"col{i}"): crudo(v)
+            for i, v in enumerate(fila)
+            if crudo(v)
+        }
+        original["hoja"] = nombre_hoja
+        original["fila"] = numero_fila
+
+        expediente = crudo(celda(fila, "expediente"))
+        if expediente:
+            exp_t, exp_n, exp_a = parsear_expediente(expediente, anio)
+        else:
+            exp_t = crudo(celda(fila, "exp_tipo")) or None
+            exp_t = re.sub(r"[^A-Za-z]", "", exp_t).upper() or None if exp_t else None
+            exp_n = entero(celda(fila, "exp_numero"))
+            exp_a = entero(celda(fila, "exp_anio"))
+            if exp_a is not None and 0 <= exp_a <= 99:
+                exp_a = anio_completo(exp_a, anio)
+            if exp_a is not None and not (1900 <= exp_a <= anio):
+                exp_a = None
+
         normalizado = {
             "numero": n,
-            "fecha": parsear_fecha(fecha),
-            "exp_tipo": tipo_expediente(exp_t),
-            "exp_numero": entero(exp_n),
-            "exp_anio": anio_expediente(exp_a, anio),
-        }
-        original = {
-            "numero": crudo(numero),
-            "fecha": crudo(fecha),
-            "exp_tipo": crudo(exp_t),
-            "exp_numero": crudo(exp_n),
-            "exp_anio": crudo(exp_a),
-            "hoja": ws.title,
-            "fila": i,
+            "fecha": parsear_fecha(celda(fila, "fecha"), anio),
+            "exp_tipo": exp_t,
+            "exp_numero": exp_n,
+            "exp_anio": exp_a,
         }
 
-        # Se deja anotado qué campos la normalización no pudo interpretar, para
-        # poder listarlos sin volver a comparar contra la planilla.
         original["sin_normalizar"] = sorted(
             campo for campo, valor in normalizado.items()
-            if valor is None and original[campo]
+            if valor is None and any(
+                k for k in original
+                if campo.split("_")[-1] in k and k not in ("hoja", "fila")
+            )
         )
 
-        if n is None:
-            avisos.append(f"{ws.title} fila {i}: número '{original['numero']}' "
-                          f"no interpretable, se guarda igual")
-        # Sin índice se guarda igual: la norma existe y tiene que aparecer al
-        # buscarla por número, aunque no se la pueda encontrar por contenido.
-        if not texto:
-            avisos.append(f"{ws.title} fila {i}: {tipo} {n} sin texto de índice")
-
-        filas.append({
+        resultado.append({
             "tipo": tipo,
             "numero": "" if n is None else n,
             "anio": anio,
             "fecha": normalizado["fecha"] or "",
             "indice": texto,
-            "exp_tipo": normalizado["exp_tipo"] or "",
-            "exp_numero": "" if normalizado["exp_numero"] is None else normalizado["exp_numero"],
-            "exp_anio": "" if normalizado["exp_anio"] is None else normalizado["exp_anio"],
+            "exp_tipo": exp_t or "",
+            "exp_numero": "" if exp_n is None else exp_n,
+            "exp_anio": "" if exp_a is None else exp_a,
             "origen": json.dumps(original, ensure_ascii=False),
         })
 
-    return filas
+    return resultado
+
+
+def procesar(ruta: Path, anio_forzado, avisos):
+    anio = anio_forzado or anio_del_nombre(ruta.name)
+    if not anio:
+        avisos.append(f"{ruta.name}: no se pudo deducir el año, se omite")
+        return []
+
+    todas = []
+    for nombre_hoja, filas in filas_de_planilla(ruta):
+        tipo = tipo_de_hoja(nombre_hoja)
+        if not tipo:
+            avisos.append(f"Hoja '{nombre_hoja}': tipo de norma no reconocido, se omite")
+            continue
+
+        # El año del nombre de la hoja manda sobre el del archivo: hay
+        # planillas que arrastran hojas de otro ejercicio.
+        anio_hoja = anio_del_nombre(nombre_hoja) or anio
+
+        filas_hoja = leer_hoja(nombre_hoja, filas, tipo, anio_hoja, avisos)
+        todas.extend(filas_hoja)
+        print(f"    {nombre_hoja:28} {tipo:20} {len(filas_hoja):5} normas")
+
+    return todas
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("planilla", type=Path)
+    ap.add_argument("planillas", type=Path, nargs="+")
     ap.add_argument("--anio", type=int,
                     help="año de las normas (por defecto se toma del nombre)")
     ap.add_argument("-o", "--salida", type=Path,
                     help="CSV de salida (por defecto, junto a la planilla)")
     args = ap.parse_args()
 
-    if not args.planilla.is_file():
-        sys.exit(f"No existe el archivo {args.planilla}")
-
-    anio = args.anio or anio_del_nombre(args.planilla.name)
-    if not anio:
-        sys.exit("No se pudo deducir el año del nombre del archivo. Pasalo con --anio")
-
-    wb = openpyxl.load_workbook(args.planilla, read_only=True, data_only=True)
-
     todas, avisos = [], []
-    for nombre in wb.sheetnames:
-        tipo = TIPOS_HOJA.get(normalizar(nombre))
-        if not tipo:
-            avisos.append(f"Hoja '{nombre}': no se reconoce el tipo de norma, se omite")
-            continue
-
-        filas = leer_hoja(wb[nombre], tipo, anio, avisos)
-        todas.extend(filas)
-        print(f"  {nombre:16} {len(filas):5} normas")
+    for ruta in args.planillas:
+        if not ruta.is_file():
+            sys.exit(f"No existe el archivo {ruta}")
+        print(f"\n  {ruta.name}")
+        todas.extend(procesar(ruta, args.anio, avisos))
 
     if not todas:
-        sys.exit("No se leyó ninguna fila. ¿Es una planilla de índice?")
+        sys.exit("\nNo se leyó ninguna fila.")
 
-    salida = args.salida or args.planilla.with_suffix(".csv")
+    salida = args.salida or args.planillas[0].with_suffix(".csv")
     with open(salida, "w", newline="", encoding="utf-8") as f:
         escritor = csv.DictWriter(f, fieldnames=CAMPOS)
         escritor.writeheader()
@@ -264,23 +425,17 @@ def main():
 
     print(f"\n  {len(todas)} normas -> {salida}")
 
-    pendientes = [f for f in todas if json.loads(f["origen"])["sin_normalizar"]]
-    if pendientes:
-        print(f"\n  {len(pendientes)} filas con algún campo sin normalizar.")
-        print("  Se guardan igual; el valor original queda en la columna `origen`.")
-        for f in pendientes[:10]:
-            o = json.loads(f["origen"])
-            detalle = ", ".join(f"{c}={o[c]!r}" for c in o["sin_normalizar"])
-            print(f"    {f['tipo']} {f['numero']}/{f['anio']}: {detalle}")
-        if len(pendientes) > 10:
-            print(f"    ... y {len(pendientes) - 10} más")
+    sin_fecha = sum(1 for f in todas if not f["fecha"])
+    sin_exp = sum(1 for f in todas if not f["exp_numero"])
+    print(f"  {sin_fecha} sin fecha normalizada, {sin_exp} sin expediente")
+    print("  (el valor de origen se conserva en la columna `origen`)")
 
     if avisos:
         print(f"\n  {len(avisos)} avisos:")
-        for a in avisos[:15]:
+        for a in avisos[:20]:
             print(f"    {a}")
-        if len(avisos) > 15:
-            print(f"    ... y {len(avisos) - 15} más")
+        if len(avisos) > 20:
+            print(f"    ... y {len(avisos) - 20} más")
 
 
 if __name__ == "__main__":

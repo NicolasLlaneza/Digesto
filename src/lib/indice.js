@@ -53,6 +53,9 @@ export async function obtenerFacetasIndice() {
 const ETIQUETAS = {
   decreto: 'Decreto',
   resolucion: 'Resolución',
+  // Serie propia en las planillas viejas, con su numeración aparte: se
+  // mantiene separada para que no colisione con las resoluciones generales.
+  resolucion_personal: 'Resolución de Personal',
   ordenanza: 'Ordenanza',
   disposicion: 'Disposición',
 }
