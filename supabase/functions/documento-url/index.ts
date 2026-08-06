@@ -89,8 +89,11 @@ Deno.serve(async (req) => {
   if (errorAuth || !user) return json({ error: "Sesión inválida" }, 401, req);
 
   let id: unknown;
+  let descarga = false;
   try {
-    ({ id } = await req.json());
+    const cuerpo = await req.json();
+    id = cuerpo.id;
+    descarga = cuerpo.descarga === true;
   } catch {
     return json({ error: "Cuerpo inválido" }, 400, req);
   }
@@ -123,6 +126,24 @@ Deno.serve(async (req) => {
       doc.r2_key.split("/").map(encodeURIComponent).join("/"),
   );
   destino.searchParams.set("X-Amz-Expires", String(VALIDEZ_SEGUNDOS));
+
+  // Con este parámetro es R2 quien manda Content-Disposition, así que el
+  // navegador baja el archivo con solo navegar a la URL. Sin fetch de por
+  // medio no hay CORS que pueda romper la descarga, y no se duplica el
+  // archivo en memoria. Va antes de firmar porque forma parte de la firma.
+  if (descarga) {
+    // Se limita a caracteres seguros: el header es ASCII, y unas comillas o
+    // un salto de línea en el nombre lo partirían.
+    const nombre = String(doc.titulo)
+      .normalize("NFKD")
+      .replace(/[̀-ͯ]/g, "")
+      .replace(/[^\w .-]/g, "_")
+      .slice(0, 100);
+    destino.searchParams.set(
+      "response-content-disposition",
+      `attachment; filename="${nombre}.pdf"`,
+    );
+  }
 
   const firmada = await aws.sign(destino.toString(), {
     method: "GET",

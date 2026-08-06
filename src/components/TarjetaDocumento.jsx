@@ -57,7 +57,7 @@ export default function TarjetaDocumento({ doc }) {
       </button>
 
       <button
-        onClick={() => accion('descargar', () => descargarDocumento(doc.id, doc.titulo))}
+        onClick={() => accion('descargar', () => descargarDocumento(doc.id))}
         disabled={ocupado !== null}
         aria-label={`Descargar ${doc.titulo}`}
         className={boton}

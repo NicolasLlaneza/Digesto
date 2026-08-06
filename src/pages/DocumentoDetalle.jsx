@@ -85,7 +85,7 @@ export default function DocumentoDetalle() {
         </button>
 
         <button
-          onClick={() => accion(() => descargarDocumento(doc.id, doc.titulo))}
+          onClick={() => accion(() => descargarDocumento(doc.id))}
           disabled={ocupado}
           className={`${accionBtn} border border-boletin-100 bg-white`}
         >
