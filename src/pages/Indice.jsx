@@ -1,6 +1,9 @@
 import { useEffect, useState } from 'react'
-import { Search, Hash, FolderOpen, X, Scale } from 'lucide-react'
-import { buscarNormas, obtenerFacetasIndice, etiquetaTipo, POR_PAGINA } from '../lib/indice'
+import { Search, Hash, FolderOpen, X, Scale, Download } from 'lucide-react'
+import {
+  buscarNormas, obtenerFacetasIndice, exportarBusqueda,
+  etiquetaTipo, POR_PAGINA,
+} from '../lib/indice'
 import FichaNorma from '../components/FichaNorma'
 
 const INICIALES = {
@@ -30,6 +33,8 @@ export default function Indice() {
   const [resultado, setResultado] = useState({ normas: [], total: 0 })
   const [cargando, setCargando] = useState(false)
   const [error, setError] = useState(null)
+  const [exportando, setExportando] = useState(false)
+  const [aviso, setAviso] = useState(null)
 
   const buscando = hayCriterio(filtros)
 
@@ -71,6 +76,24 @@ export default function Indice() {
 
   const set = (campo) => (e) =>
     setFiltros((f) => ({ ...f, [campo]: e.target.value, pagina: 0 }))
+
+  async function exportar() {
+    setExportando(true)
+    setAviso(null)
+    try {
+      const { filas, recortado } = await exportarBusqueda(filtros)
+      if (recortado) {
+        setAviso(
+          `Se exportaron las primeras ${filas.toLocaleString('es-AR')} normas, ` +
+          `que es el tope por archivo. Acotá la búsqueda para incluirlas todas.`
+        )
+      }
+    } catch (e) {
+      setError(`No se pudo exportar: ${e.message}`)
+    } finally {
+      setExportando(false)
+    }
+  }
 
   const paginas = Math.ceil(resultado.total / POR_PAGINA)
   const grupos = agruparPorAnio(resultado.normas)
@@ -187,10 +210,29 @@ export default function Indice() {
 
       {buscando && !cargando && resultado.total > 0 && (
         <>
-          <p className="mb-3 text-sm text-boletin-600">
-            {resultado.total.toLocaleString('es-AR')}{' '}
-            {resultado.total === 1 ? 'norma' : 'normas'}
-          </p>
+          <div className="mb-3 flex flex-wrap items-center gap-3">
+            <p className="text-sm text-boletin-600">
+              {resultado.total.toLocaleString('es-AR')}{' '}
+              {resultado.total === 1 ? 'norma' : 'normas'}
+            </p>
+
+            <button
+              onClick={exportar}
+              disabled={exportando}
+              className="ml-auto inline-flex items-center gap-1.5 rounded-md border
+                         border-boletin-100 bg-white px-3 py-1.5 text-sm
+                         text-boletin-600 hover:bg-boletin-50 disabled:opacity-50"
+            >
+              <Download size={15} aria-hidden="true" />
+              {exportando ? 'Preparando…' : 'Exportar a CSV'}
+            </button>
+          </div>
+
+          {aviso && (
+            <p className="mb-3 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900">
+              {aviso}
+            </p>
+          )}
 
           {grupos.map(({ anio, normas }) => (
             <section key={anio} className="mb-6">

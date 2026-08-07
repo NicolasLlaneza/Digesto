@@ -40,6 +40,88 @@ export async function buscarNormas({
   }
 }
 
+// Tope de filas por exportación. Un año entero ronda las 6.300, así que
+// alcanza para cualquier búsqueda razonable sin que el navegador tenga que
+// sostener un archivo enorme en memoria.
+export const TOPE_EXPORTACION = 10_000
+
+const COLUMNAS_EXPORTACION = [
+  ['Tipo', (n) => etiquetaTipo(n.tipo)],
+  ['Número', (n) => n.numero ?? ''],
+  ['Año', (n) => n.anio],
+  ['Fecha', (n) => formatearFecha(n.fecha) ?? ''],
+  ['Índice', (n) => n.indice ?? ''],
+  ['Expediente tipo', (n) => n.exp_tipo ?? ''],
+  ['Expediente número', (n) => n.exp_numero ?? ''],
+  ['Expediente año', (n) => n.exp_anio ?? ''],
+]
+
+/** Escapa un valor para CSV: comillas dobles y encierro si hace falta. */
+export function celda(valor) {
+  const texto = String(valor ?? '')
+  return /[";\n\r]/.test(texto) ? `"${texto.replace(/"/g, '""')}"` : texto
+}
+
+/**
+ * Descarga los resultados de una búsqueda como CSV.
+ *
+ * Trae el resultado completo y no solo la página visible, que es lo que
+ * tiene sentido al exportar. Pide los datos sin resaltado: sobre miles de
+ * filas ese cálculo domina el tiempo de respuesta, y en un archivo no
+ * aporta nada.
+ *
+ * Devuelve cuántas filas se exportaron y si el tope las recortó.
+ */
+export async function exportarBusqueda({
+  numero, expediente, texto, tipo, anio,
+}) {
+  const { data, error } = await supabase.rpc('buscar_indice', {
+    q: texto?.trim() || null,
+    p_numero: numero?.trim() ? Number(numero.trim()) : null,
+    p_expediente: expediente?.trim() ? Number(expediente.trim()) : null,
+    p_tipo: tipo || null,
+    p_anio: anio ? Number(anio) : null,
+    p_limite: TOPE_EXPORTACION,
+    p_offset: 0,
+    p_resaltar: false,
+  })
+
+  if (error) throw error
+  if (!data?.length) return { filas: 0, recortado: false }
+
+  const lineas = [
+    COLUMNAS_EXPORTACION.map(([titulo]) => celda(titulo)).join(';'),
+    ...data.map((n) =>
+      COLUMNAS_EXPORTACION.map(([, valor]) => celda(valor(n))).join(';')
+    ),
+  ]
+
+  // Punto y coma como separador, y una marca de orden de bytes al
+  // principio: es lo que hace que Excel en español abra el archivo en
+  // columnas y respete los acentos, en vez de volcar todo en la primera.
+  const contenido = `\uFEFF${lineas.join('\r\n')}\r\n`
+  const blob = new Blob([contenido], { type: 'text/csv;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+
+  const partes = ['digesto']
+  if (texto?.trim()) partes.push(texto.trim().replace(/[^\w\s-]/g, '').slice(0, 40))
+  if (tipo) partes.push(tipo)
+  if (anio) partes.push(anio)
+  if (numero?.trim()) partes.push(`n${numero.trim()}`)
+  if (expediente?.trim()) partes.push(`exp${expediente.trim()}`)
+
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `${partes.join('-').replace(/\s+/g, '_')}.csv`
+  a.click()
+
+  // Se libera después: revocar en el mismo turno puede cortar la descarga
+  // antes de que el navegador termine de leer el blob.
+  setTimeout(() => URL.revokeObjectURL(url), 10_000)
+
+  return { filas: data.length, recortado: data.length === TOPE_EXPORTACION }
+}
+
 export async function obtenerFacetasIndice() {
   const { data, error } = await supabase.rpc('facetas_indice')
   if (error) throw error

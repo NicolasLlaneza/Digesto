@@ -3,7 +3,7 @@ import { describe, it, expect, vi } from 'vitest'
 vi.stubEnv('VITE_SUPABASE_URL', 'https://abc.supabase.co')
 vi.stubEnv('VITE_SUPABASE_ANON_KEY', 'clave')
 
-const { tramosResaltados, etiquetaTipo } = await import('./indice.js')
+const { tramosResaltados, etiquetaTipo, celda } = await import('./indice.js')
 
 describe('tramosResaltados', () => {
   it('separa las coincidencias del texto que las rodea', () => {
@@ -67,5 +67,31 @@ describe('agrupación por año', () => {
 
   it('devuelve vacío sin resultados', () => {
     expect(agrupar([])).toEqual([])
+  })
+})
+
+describe('celda (escapado CSV)', () => {
+  it('deja pasar los valores simples', () => {
+    expect(celda('AUTORIZASE')).toBe('AUTORIZASE')
+    expect(celda(1234)).toBe('1234')
+  })
+
+  it('encierra los que traen el separador', () => {
+    // Los índices tienen punto y coma seguido; sin comillas romperían las
+    // columnas al abrirlos en Excel.
+    expect(celda('Multa; y Plazo')).toBe('"Multa; y Plazo"')
+  })
+
+  it('duplica las comillas internas', () => {
+    expect(celda('dice "esto" acá')).toBe('"dice ""esto"" acá"')
+  })
+
+  it('encierra los saltos de línea', () => {
+    expect(celda('linea1\nlinea2')).toBe('"linea1\nlinea2"')
+  })
+
+  it('convierte nulos en vacío', () => {
+    expect(celda(null)).toBe('')
+    expect(celda(undefined)).toBe('')
   })
 })
