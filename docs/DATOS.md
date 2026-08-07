@@ -80,9 +80,17 @@ perdido en la conversión.
 
 ## Reimportar un año
 
-La carga suma, no reemplaza, y no hay restricción de unicidad —en los datos
-reales hay números repetidos, y rechazarlos perdería normas legítimas—. Así
-que para rehacer un año hay que borrarlo antes:
+Se puede volver a importar cualquier planilla sin borrar nada: una norma que
+ya está no se carga de nuevo. Es lo que permite reimportar el año en curso
+cada mes, cuando la planilla creció con las normas nuevas.
+
+La comparación es por el **contenido completo** —tipo, número, año, fecha,
+índice y expediente—, no por número. Eso importa: sobre las normas cargadas,
+una restricción por (tipo, número, año) rechazaría 1.978 filas legítimas,
+porque los números repetidos son reales en estos datos.
+
+Si en cambio corregiste la planilla y querés que los cambios entren, hay que
+borrar el año primero, porque las filas viejas seguirían ahí:
 
 ```sql
 delete from indice_normas where anio = 2021;
