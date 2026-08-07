@@ -259,7 +259,7 @@ def mapear_columnas(nombres):
     return mapa
 
 
-def leer_hoja(nombre_hoja, filas, tipo, anio, avisos):
+def leer_hoja(nombre_hoja, filas, tipo, anio, avisos, incluir_vacias=False):
     fila_enc, nombres = ubicar_encabezado(filas)
     if fila_enc is None:
         avisos.append(f"Hoja '{nombre_hoja}': no se encontró el encabezado, se omite")
@@ -303,6 +303,8 @@ def leer_hoja(nombre_hoja, filas, tipo, anio, avisos):
 
     resultado = []
 
+    vacias = 0
+
     for numero_fila, fila in enumerate(filas[fila_enc + 1:], start=fila_enc + 2):
         if not any(c is not None and str(c).strip() for c in fila):
             continue
@@ -319,6 +321,15 @@ def leer_hoja(nombre_hoja, filas, tipo, anio, avisos):
 
         if n is None and not texto:
             continue
+
+        # Numeración preparada de antemano: la planilla del año en curso trae
+        # las filas creadas con el número puesto y el resto en blanco. No son
+        # normas dictadas, así que no se importan salvo que se pida.
+        otros = [v for i, v in enumerate(fila) if i != mapa["numero"] and crudo(v)]
+        if n is not None and not otros:
+            vacias += 1
+            if not incluir_vacias:
+                continue
 
         # Todas las celdas, con el nombre de su columna, sin interpretar.
         original = {
@@ -370,10 +381,18 @@ def leer_hoja(nombre_hoja, filas, tipo, anio, avisos):
             "origen": json.dumps(original, ensure_ascii=False),
         })
 
+    if vacias:
+        avisos.append(
+            f"Hoja '{nombre_hoja}': {vacias} filas traen solo el número, sin "
+            f"fecha ni texto" +
+            ("; se importan por --incluir-vacias" if incluir_vacias
+             else "; no se importan (usá --incluir-vacias para incluirlas)")
+        )
+
     return resultado
 
 
-def procesar(ruta: Path, anio_forzado, avisos):
+def procesar(ruta: Path, anio_forzado, avisos, incluir_vacias=False):
     anio = anio_forzado or anio_del_nombre(ruta.name)
     if not anio:
         avisos.append(f"{ruta.name}: no se pudo deducir el año, se omite")
@@ -390,7 +409,8 @@ def procesar(ruta: Path, anio_forzado, avisos):
         # planillas que arrastran hojas de otro ejercicio.
         anio_hoja = anio_del_nombre(nombre_hoja) or anio
 
-        filas_hoja = leer_hoja(nombre_hoja, filas, tipo, anio_hoja, avisos)
+        filas_hoja = leer_hoja(nombre_hoja, filas, tipo, anio_hoja, avisos,
+                               incluir_vacias)
         todas.extend(filas_hoja)
         print(f"    {nombre_hoja:28} {tipo:20} {len(filas_hoja):5} normas")
 
@@ -405,6 +425,10 @@ def main():
                     help="año de las normas (por defecto se toma del nombre)")
     ap.add_argument("-o", "--salida", type=Path,
                     help="CSV de salida (por defecto, junto a la planilla)")
+    ap.add_argument("--incluir-vacias", action="store_true",
+                    help="importar también las filas que solo traen el número, "
+                         "sin fecha ni texto: la planilla del año en curso "
+                         "trae la numeración preparada de antemano")
     ap.add_argument("--por-anio", action="store_true",
                     help="un CSV por año en vez de uno solo, para poder "
                          "reimportar un año sin tocar los demás")
@@ -415,7 +439,7 @@ def main():
         if not ruta.is_file():
             sys.exit(f"No existe el archivo {ruta}")
         print(f"\n  {ruta.name}")
-        todas.extend(procesar(ruta, args.anio, avisos))
+        todas.extend(procesar(ruta, args.anio, avisos, args.incluir_vacias))
 
     if not todas:
         sys.exit("\nNo se leyó ninguna fila.")
