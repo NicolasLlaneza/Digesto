@@ -56,6 +56,7 @@ export default function Indice() {
     const t = setTimeout(async () => {
       setCargando(true)
       setError(null)
+      setAviso(null)
       try {
         const nuevo = await buscarNormas(filtros)
         // El total llega solo en la primera página. Al paginar se conserva
@@ -65,7 +66,7 @@ export default function Indice() {
           total: nuevo.total ?? previo.total,
         }))
       } catch (e) {
-        setError(e.message)
+        setError(`No se pudo consultar el índice: ${e.message}`)
       } finally {
         setCargando(false)
       }
@@ -196,7 +197,7 @@ export default function Indice() {
 
       {error && (
         <p role="alert" className="rounded-md bg-red-50 text-red-800 px-4 py-3 text-sm">
-          No se pudo consultar el índice: {error}
+          {error}
         </p>
       )}
 
